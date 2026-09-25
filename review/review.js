@@ -1,3 +1,7 @@
+/* Annotate Tool - Copyright (C) 2026 Mark Van de Velde
+ * SPDX-License-Identifier: GPL-3.0-only
+ * This program comes with ABSOLUTELY NO WARRANTY. See LICENSE for terms.
+ */
 /* Annotate Tool - review/review.js
  *
  * Opens an exported bundle and walks through it one annotation at a time.

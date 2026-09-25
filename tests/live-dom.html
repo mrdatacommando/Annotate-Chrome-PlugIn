@@ -1,4 +1,7 @@
 <!doctype html>
+<!-- Annotate Tool - Copyright (C) 2026 Mark Van de Velde
+     SPDX-License-Identifier: GPL-3.0-only
+     This program comes with ABSOLUTELY NO WARRANTY. See LICENSE for terms. -->
 <html>
 <head><meta charset="utf-8"><title>Annotate Tool - live DOM package</title></head>
 <body>
@@ -6,7 +9,7 @@
 
 <!-- A <main> region, because that is what broke this in the wild. Page-text
      extraction picks a CONTENT REGION and returns only that: on a page with a
-     <main>, anything appended to <body> is never returned. Canvas has one; the
+     <main>, anything appended to <body> is never returned. Real apps have one; the
      first version of this harness did not, so the notice appeared to work here
      while being invisible on every real application. -->
 <main id="page">

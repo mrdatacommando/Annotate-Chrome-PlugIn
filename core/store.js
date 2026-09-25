@@ -1,3 +1,7 @@
+/* Annotate Tool - Copyright (C) 2026 Mark Van de Velde
+ * SPDX-License-Identifier: GPL-3.0-only
+ * This program comes with ABSOLUTELY NO WARRANTY. See LICENSE for terms.
+ */
 /* Annotate Tool - core/store.js
  *
  * Thin wrapper over chrome.storage.local. Loaded by the content script, the

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Annotate Tool - Copyright (C) 2026 Mark Van de Velde
+# SPDX-License-Identifier: GPL-3.0-only
 # Runs every harness headlessly and reports the totals.
 #
 # Harnesses report into a div called "checks" or, in parse-check, "out".

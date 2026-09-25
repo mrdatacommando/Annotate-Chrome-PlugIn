@@ -1,3 +1,7 @@
+/* Annotate Tool - Copyright (C) 2026 Mark Van de Velde
+ * SPDX-License-Identifier: GPL-3.0-only
+ * This program comes with ABSOLUTELY NO WARRANTY. See LICENSE for terms.
+ */
 /* Annotate Tool - options/options.js
  *
  * Settings. Currently: your name, and the working folder.
@@ -72,16 +76,16 @@
   /* --- working folder ---------------------------------------------------- */
 
   const FOLDER_STATE = {
-    granted: { icon: '📂', state: 'Ready', warn: false },
+    granted: { icon: 'ð', state: 'Ready', warn: false },
     prompt: {
-      icon: '📁',
-      state: 'Needs permission again — Chrome asks after a restart',
+      icon: 'ð',
+      state: 'Needs permission again â Chrome asks after a restart',
       warn: true
     },
-    denied: { icon: '📁', state: 'Permission was declined', warn: true },
-    gone: { icon: '📁', state: 'No longer reachable — moved, renamed or deleted', warn: true },
-    missing: { icon: '📁', state: 'No folder chosen yet', warn: false },
-    unsupported: { icon: '🚫', state: 'Not available in this browser', warn: true }
+    denied: { icon: 'ð', state: 'Permission was declined', warn: true },
+    gone: { icon: 'ð', state: 'No longer reachable â moved, renamed or deleted', warn: true },
+    missing: { icon: 'ð', state: 'No folder chosen yet', warn: false },
+    unsupported: { icon: 'ð«', state: 'Not available in this browser', warn: true }
   };
 
   function renderFolder(status) {
@@ -90,7 +94,7 @@
     card.appendChild(el('p', null,
       'Save exported bundles straight to a folder, and reopen them without a ' +
       'file dialog. Point it at a synced Drive, OneDrive or Dropbox folder and ' +
-      'they sync themselves — nothing is sent anywhere by this extension. ' +
+      'they sync themselves â nothing is sent anywhere by this extension. ' +
       'Pick a folder of its own, such as Documents\\Annotate Reviews; you can ' +
       'create one from inside the chooser.'));
 
@@ -114,7 +118,7 @@
     const row = el('div', 'row');
 
     row.appendChild(button(
-      status.permission === 'missing' ? 'Choose a folder…' : 'Choose a different folder…',
+      status.permission === 'missing' ? 'Choose a folderâ¦' : 'Choose a different folderâ¦',
       'go',
       async () => {
         try {
@@ -175,13 +179,13 @@
      * only place to explain it is before the fact. */
     list.appendChild(el('li', null,
       'Chrome will not allow Downloads, Desktop, Documents, your home folder ' +
-      'or system folders to be chosen directly — it says they "contain ' +
+      'or system folders to be chosen directly â it says they "contain ' +
       'system files". A subfolder inside any of them works: choose ' +
       'Downloads\\Annotate Reviews rather than Downloads itself.'));
     list.appendChild(el('li',
       null,
       'Chrome only tells the extension the folder\'s name, never its full ' +
-      'path — so "' + (status.name || 'Reviews') + '" is all this page can show.'));
+      'path â so "' + (status.name || 'Reviews') + '" is all this page can show.'));
     list.appendChild(el('li', null,
       'After you restart Chrome you may be asked to allow the folder once ' +
       'more. The choice is remembered; the permission is what expires.'));
@@ -235,7 +239,7 @@
      * the mistake obvious. */
     if (result.reason === 'elsewhere') {
       say('That was saved to ' + (result.savedTo || 'another folder') +
-          ', which is not your working folder. Nothing was stored — run it ' +
+          ', which is not your working folder. Nothing was stored â run it ' +
           'again and save into the folder you chose above.', false);
       return;
     }
@@ -282,13 +286,13 @@
       if (!p.path) {
         preview.textContent = 'An agent will be told: folder "' +
           (p.folder || 'not set') + '", file ' + p.file +
-          ' — and will have to locate it itself.';
+          ' â and will have to locate it itself.';
         return;
       }
       preview.textContent = 'An agent will be told: ' + p.path +
         (p.pathVerified
-          ? ' — confirmed to be this folder.'
-          : ' — passed on as typed, not checked.');
+          ? ' â confirmed to be this folder.'
+          : ' â passed on as typed, not checked.');
     }
     updatePreview(input.value, record.verified);
     // Editing invalidates a previous confirmation: what is in the box is no
@@ -301,7 +305,7 @@
 
     /* Offered first, because it is both easier and better: it fills the box in
      * AND confirms the answer, which typing cannot do. */
-    row.appendChild(button('Detect automatically…', 'blue', detectPath));
+    row.appendChild(button('Detect automaticallyâ¦', 'blue', detectPath));
 
     row.appendChild(button('Save path', 'go', async () => {
       const saved = await AT.live.setTypedPath(input.value);
@@ -322,7 +326,7 @@
     const list = el('ul');
     list.appendChild(el('li', null,
       'When you choose a folder, Chrome tells the extension its name and ' +
-      'nothing else — never the path. That is why this cannot simply be ' +
+      'nothing else â never the path. That is why this cannot simply be ' +
       'filled in when you pick the folder.'));
     list.appendChild(el('li', null,
       'Detecting works around it: saving a file tells the extension where ' +
@@ -375,6 +379,14 @@
       message = null; // shown once, not sticky across the next render
     }
   }
+
+  /* Version comes from the manifest so the notice cannot drift out of date.
+   * Guarded: the test harness stubs chrome.storage but not runtime.getManifest. */
+  try {
+    const slot = document.getElementById("version");
+    const v = chrome.runtime.getManifest && chrome.runtime.getManifest().version;
+    if (slot && v) slot.textContent = "v" + v + " — ";
+  } catch (_) { /* notice still reads correctly without it */ }
 
   render();
 })();

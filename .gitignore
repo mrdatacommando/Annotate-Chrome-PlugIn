@@ -2,6 +2,7 @@
 *.pem
 *.crx
 *.zip
+!releases/*.zip
 
 # Local session output (the tool writes bundles to a folder you pick)
 live/

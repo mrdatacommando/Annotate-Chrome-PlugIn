@@ -1,3 +1,7 @@
+/* Annotate Tool - Copyright (C) 2026 Mark Van de Velde
+ * SPDX-License-Identifier: GPL-3.0-only
+ * This program comes with ABSOLUTELY NO WARRANTY. See LICENSE for terms.
+ */
 /* Annotate Tool - background.js (MV3 service worker)
  *
  * Does the things a content script cannot: capture the tab, own the extension's

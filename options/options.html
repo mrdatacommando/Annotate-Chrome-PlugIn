@@ -1,4 +1,7 @@
 <!doctype html>
+<!-- Annotate Tool - Copyright (C) 2026 Mark Van de Velde
+     SPDX-License-Identifier: GPL-3.0-only
+     This program comes with ABSOLUTELY NO WARRANTY. See LICENSE for terms. -->
 <html>
 <head>
 <meta charset="utf-8">
@@ -72,6 +75,11 @@
     color: inherit; font: inherit;
   }
   label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 5px; }
+  .legal {
+    margin-top: 22px; padding-top: 12px; border-top: 1px solid var(--line);
+    font-size: 11.5px; line-height: 1.5; color: var(--muted);
+  }
+  .legal a { color: inherit; }
 </style>
 </head>
 <body>
@@ -79,6 +87,14 @@
     <h1>Annotate Tool</h1>
     <p class="sub">Settings</p>
     <div id="app">Loading…</div>
+
+    <footer class="legal">
+      Annotate Tool <span id="version"></span>Copyright (C) 2026 Mark Van de Velde.<br>
+      This program comes with ABSOLUTELY NO WARRANTY. It is free software, and
+      you are welcome to redistribute it under the terms of the
+      <a href="https://www.gnu.org/licenses/gpl-3.0.html" target="_blank" rel="noopener">GNU
+      General Public License, version 3</a>.
+    </footer>
   </div>
 
   <script src="../core/store.js"></script>

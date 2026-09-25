@@ -7,12 +7,20 @@ Start a session, browse across as many pages as you like leaving highlights,
 notes and arrows, capture screenshots, then end the session and export
 everything together.
 
+## Download
+
+**Just want to use it?** Grab
+[`annotate-tool-v1.15.0.zip`](releases/annotate-tool-v1.15.0.zip) from the
+`releases/` folder, or from the [latest release](../../releases/latest) page,
+then follow **Install** below. Nothing else in this repository is needed to run
+the extension — the source is here for people who want to read or change it.
+
 ## Install
 
 Chrome blocks side-loaded `.crx` files outside the Web Store, so **Load
 unpacked** is the only reliable install path.
 
-1. Unzip `annotate-tool.zip` somewhere permanent (Chrome reads the folder on
+1. Unzip `annotate-tool-v1.15.0.zip` somewhere permanent (Chrome reads the folder on
    every launch — if you delete it, the extension disappears).
 2. Open `chrome://extensions`.
 3. Turn on **Developer mode** (top right).
@@ -380,8 +388,24 @@ chrome.exe --headless --disable-gpu --allow-file-access-from-files \
 | `roundtrip.html` | Export → read → review → re-export, and v1 compatibility |
 | `integration.html` | Full stack: create, capture, reload-restore, unplaced, region highlights, popover saves, arrow geometry |
 
-426 checks at time of writing.
+587 checks at time of writing.
 
 **Not covered by the harnesses**, because they need a real extension context:
 `tabs.captureVisibleTab`, `chrome.downloads`, and cross-tab session sync. Those
 need a manual pass after Load unpacked.
+
+## Licence
+
+Copyright (C) 2026 Mark Van de Velde.
+
+Annotate Tool is free software, released under the **GNU General Public License
+version 3**. You may use, study, share and modify it. If you distribute a
+modified version, you must release your source under the GPL as well, so the
+people you give it to keep the same freedoms.
+
+The full terms are in [LICENSE](LICENSE). Every source file carries an
+`SPDX-License-Identifier: GPL-3.0-only` header.
+
+This program is distributed in the hope that it will be useful, but **WITHOUT
+ANY WARRANTY** — without even the implied warranty of merchantability or
+fitness for a particular purpose. See the licence for details.

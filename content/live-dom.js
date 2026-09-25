@@ -1,3 +1,7 @@
+/* Annotate Tool - Copyright (C) 2026 Mark Van de Velde
+ * SPDX-License-Identifier: GPL-3.0-only
+ * This program comes with ABSOLUTELY NO WARRANTY. See LICENSE for terms.
+ */
 /* Annotate Tool - content/live-dom.js
  *
  * Publishes the running session into the page's own DOM, so a local AI agent
@@ -135,7 +139,7 @@
    * reported `Source element: <main>` and returned nothing else. Header text,
    * body-appended text and clipped text all outside <main> were absent.
    *
-   * Canvas, like most applications, has a <main>. So the notice was appended
+   * Most real applications have a <main>. So the notice was appended
    * to the body, sat outside it, and was never returned - which is why an
    * assistant asked to find annotations read the page, got nothing, and fell
    * back to screenshots. The same measurement confirmed the fix: clipped and
