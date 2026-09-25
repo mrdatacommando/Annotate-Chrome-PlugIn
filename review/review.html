@@ -1,0 +1,277 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Annotate Tool — review</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9; --card: #fff; --ink: #16191f; --muted: #5c6470;
+    --line: #e2e5ea; --accent: #2f6f4f; --blue: #2f6ff0;
+    --warn: #a8560f; --warnbg: #fdf1e3; --rail: #eef0f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171d; --card: #1c2029; --ink: #eef1f5; --muted: #98a1b0;
+      --line: #2a2f3a; --accent: #3a8a62; --blue: #5b8df6;
+      --warn: #ffb37a; --warnbg: #33240f; --rail: #191d25;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; display: flex; flex-direction: column;
+    background: var(--bg); color: var(--ink);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+
+  /* --- drop zone / empty state --- */
+  .empty-state {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    padding: 40px;
+  }
+  .drop {
+    max-width: 520px; width: 100%; padding: 40px 32px;
+    border: 2px dashed var(--line); border-radius: 16px;
+    background: var(--card); text-align: center;
+  }
+  .drop.over { border-color: var(--blue); background: color-mix(in srgb, var(--blue) 8%, var(--card)); }
+  .drop h1 { margin: 0 0 6px; font-size: 20px; }
+  .drop p { margin: 0 0 18px; color: var(--muted); }
+  .drop .err { color: var(--warn); margin-top: 14px; }
+
+  /* Bundles already in the working folder - a shortcut past the file dialog,
+     not a file browser. Absent entirely when no folder is set up. */
+  .recent { margin-top: 22px; text-align: left; }
+  .recent h3 {
+    margin: 0 0 8px; font-size: 11px; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--muted); font-weight: 700;
+  }
+  .recent-list { display: flex; flex-direction: column; gap: 6px; }
+  .recent-item {
+    display: flex; align-items: baseline; gap: 10px; width: 100%;
+    text-align: left; font-weight: 500; padding: 8px 11px;
+    background: var(--bg); border: 1px solid var(--line);
+  }
+  .recent-item:hover { border-color: var(--blue); }
+  .recent-meta { margin-left: auto; color: var(--muted); font-size: 12px; }
+  .recent-note {
+    display: flex; align-items: center; gap: 8px; justify-content: center;
+    color: var(--muted); font-size: 12.5px;
+  }
+
+  button {
+    padding: 9px 15px; border: 0; border-radius: 9px;
+    font: inherit; font-weight: 600; cursor: pointer;
+    background: var(--line); color: var(--ink);
+  }
+  button:hover { filter: brightness(1.06); }
+  button.go { background: var(--accent); color: #fff; }
+  button.blue { background: var(--blue); color: #fff; }
+  button:disabled { opacity: .45; cursor: default; }
+  button.quiet { background: transparent; font-weight: 500; color: var(--muted); }
+
+  /* --- app shell --- */
+  .shell { flex: 1; display: flex; min-height: 0; }
+
+  .rail {
+    width: 232px; flex: 0 0 232px; overflow-y: auto;
+    background: var(--rail); border-right: 1px solid var(--line);
+    padding: 10px 0 24px;
+  }
+  .rail h2 {
+    margin: 14px 12px 6px; font-size: 11px; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--muted); font-weight: 700;
+  }
+  .rail .row {
+    display: flex; gap: 8px; align-items: baseline;
+    padding: 6px 12px; cursor: pointer; border-left: 3px solid transparent;
+    font-size: 13px;
+  }
+  .rail .row:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); }
+  .rail .row.on { background: var(--card); border-left-color: var(--blue); font-weight: 600; }
+  .rail .row .mark { width: 12px; flex: 0 0 12px; color: var(--muted); }
+  .rail .row.done .mark { color: var(--accent); }
+  .rail .row .label {
+    flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .rail .row.skipped .label, .rail .row.done .label { opacity: .55; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 9px; }
+
+  .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+  .topbar {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 18px; border-bottom: 1px solid var(--line);
+    background: var(--card);
+  }
+  .topbar .count { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .topbar .spacer { flex: 1; }
+  .topbar .bundle { color: var(--muted); font-size: 12.5px;
+                    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .progress { height: 3px; background: var(--line); }
+  .progress > i { display: block; height: 100%; background: var(--accent); transition: width .2s; }
+
+  .detail { flex: 1; overflow-y: auto; padding: 22px 26px 40px; }
+  .detail .wrap { max-width: 780px; margin: 0 auto; }
+
+  .kind { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .kind .name { font-weight: 600; }
+  .badge {
+    padding: 2px 8px; border-radius: 99px; font-size: 11.5px;
+    background: var(--line); color: var(--muted);
+  }
+  .badge.warn { background: var(--warnbg); color: var(--warn); }
+  .badge.done { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); }
+
+  .quote {
+    margin: 0 0 12px; padding: 12px 14px; border-radius: 10px;
+    background: var(--card); border: 1px solid var(--line);
+    font-size: 15px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  .comment {
+    margin: 0 0 14px; padding: 10px 14px; border-left: 3px solid var(--blue);
+    background: var(--card); border-radius: 0 8px 8px 0;
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  .comment .lbl { display: block; font-size: 11px; text-transform: uppercase;
+                  letter-spacing: .05em; color: var(--muted); margin-bottom: 3px; }
+
+  /* The frame around the screenshot. The border lives HERE rather than on
+     .shotwrap so the wrapper's box is exactly the image's box - the magnifier
+     positions itself in wrapper coordinates, and a 1px border would offset
+     every reading. */
+  .shotview {
+    max-width: 100%; border: 1px solid var(--line); border-radius: 10px;
+    overflow: hidden; background: #fff;
+  }
+  /* At 100% the frame keeps the exact footprint it had while fitted and
+     becomes a scrollable window into the larger image. Its height is set
+     inline by applyMode(); no max-height here, or the box would jump and
+     shove the rest of the page down - the very thing this avoids. */
+  .shotview.actual { overflow: auto; }
+
+  .shotwrap { position: relative; display: block; }
+  .shotwrap img {
+    display: block; max-width: 100%; height: auto;
+    cursor: zoom-in; user-select: none;
+  }
+  .shotview.actual .shotwrap { display: inline-block; }
+  .shotview.actual .shotwrap img { max-width: none; cursor: grab; }
+  .shotview.actual .shotwrap img:active { cursor: grabbing; }
+
+  .pin {
+    position: absolute; border: 3px solid #ff3b30; border-radius: 4px;
+    box-shadow: 0 0 0 3px rgba(255,59,48,.28); pointer-events: none;
+  }
+
+  /* The magnifier. pointer-events:none is essential - a lens that swallowed
+     the cursor would chase itself, since it is positioned FROM the cursor. */
+  .lens {
+    position: absolute; border-radius: 50%;
+    pointer-events: none;
+    background-repeat: no-repeat; background-color: #fff;
+    border: 2px solid rgba(255,255,255,.9);
+    box-shadow: 0 0 0 1px rgba(0,0,0,.35), 0 8px 24px rgba(0,0,0,.35);
+  }
+  .lens[hidden] { display: none; }
+
+  .shothint { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
+  .noshot {
+    padding: 22px; border: 1px dashed var(--line); border-radius: 10px;
+    color: var(--muted); text-align: center; background: var(--card);
+  }
+
+  .meta { margin: 14px 0 0; color: var(--muted); font-size: 12.5px; }
+  .meta a { color: var(--blue); word-break: break-all; }
+
+  /* --- reply thread --- */
+  .thread { margin-top: 18px; display: flex; flex-direction: column; gap: 10px; }
+  .entry {
+    padding: 10px 13px; border-radius: 10px;
+    background: var(--card); border: 1px solid var(--line);
+  }
+  /* Your own replies sit visually apart, so a long back-and-forth is readable
+     at a glance rather than one undifferentiated column. */
+  .entry.mine { border-left: 3px solid var(--accent); }
+  .entry-head {
+    display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px;
+  }
+  .entry-head .who { font-weight: 600; font-size: 13px; }
+  .entry-head .when { color: var(--muted); font-size: 11.5px; }
+  .entry-body { white-space: pre-wrap; overflow-wrap: anywhere; }
+  button.tiny { padding: 3px 8px; font-size: 11.5px; margin-top: 6px; }
+
+  .reply-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+  .namefield { display: flex; align-items: center; gap: 6px; }
+  .namefield label { font-size: 12px; color: var(--muted); }
+  .namefield input {
+    width: 130px; padding: 6px 9px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--bg);
+    color: inherit; font: inherit; font-size: 13px;
+  }
+
+  .reply { margin-top: 18px; }
+  .reply label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 5px; }
+  .reply textarea {
+    width: 100%; min-height: 74px; resize: vertical; padding: 9px 11px;
+    border: 1px solid var(--line); border-radius: 9px;
+    background: var(--card); color: inherit; font: inherit;
+  }
+  .reply textarea:focus { outline: 2px solid var(--blue); outline-offset: -1px; }
+
+  .actions {
+    display: flex; gap: 8px; align-items: center;
+    padding: 12px 18px; border-top: 1px solid var(--line); background: var(--card);
+  }
+  .actions .spacer { flex: 1; }
+  .hint { color: var(--muted); font-size: 12px; }
+  kbd {
+    padding: 1px 5px; border: 1px solid var(--line); border-bottom-width: 2px;
+    border-radius: 4px; font: inherit; font-size: 11px; background: var(--bg);
+  }
+  .banner {
+    background: var(--warnbg); color: var(--warn);
+    padding: 9px 18px; font-size: 13px;
+  }
+
+  /* --- data for an AI assistant ---
+     Rendered as real text in the DOM rather than held in JS, so an assistant
+     looking at this tab can read the whole session rather than the one item
+     currently on screen. */
+  .aipanel {
+    border-bottom: 1px solid var(--line);
+    background: var(--rail); padding: 12px 18px;
+    max-height: 46vh; display: flex; flex-direction: column;
+  }
+  .aipanel-head {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    margin-bottom: 8px;
+  }
+  .aipanel-head .spacer { flex: 1; }
+  .aipanel-head .hint { flex-basis: 100%; order: 3; }
+  .aipanel-head button { padding: 6px 11px; font-size: 12.5px; }
+  .aipanel pre {
+    margin: 0; overflow: auto; flex: 1;
+    padding: 12px 14px; border-radius: 9px;
+    background: var(--card); border: 1px solid var(--line);
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre-wrap; overflow-wrap: anywhere;
+    user-select: text;
+  }
+</style>
+</head>
+<body>
+  <div id="app"></div>
+  <input type="file" id="file" accept=".zip,application/zip" hidden>
+
+  <script src="../core/store.js"></script>
+  <script src="../core/zip.js"></script>
+  <script src="../core/unzip.js"></script>
+  <script src="../core/report.js"></script>
+  <script src="../core/lens.js"></script>
+  <script src="../core/folder.js"></script>
+  <script src="../core/live.js"></script>
+  <script src="review.js"></script>
+</body>
+</html>

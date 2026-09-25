@@ -1,0 +1,254 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Annotate Tool - settings page</title></head>
+<body>
+
+<div id="app"></div>
+<div id="checks">pending</div>
+
+<script>
+  window.__errors = [];
+  window.onerror = function (m, s, l, c) {
+    window.__errors.push(m + ' @' + (s || '?').split('/').pop() + ':' + l + ':' + c);
+  };
+  const mem = { at_identity: { name: 'Mark', setAt: '2026-09-10T09:00:00.000Z' } };
+  window.chrome = {
+    storage: {
+      local: {
+        async get(k) {
+          if (k === null) return Object.assign({}, mem);
+          if (typeof k === 'string') return k in mem ? { [k]: mem[k] } : {};
+          return {};
+        },
+        async set(o) { Object.assign(mem, o); },
+        async remove(keys) { (Array.isArray(keys) ? keys : [keys]).forEach(k => delete mem[k]); }
+      },
+      onChanged: { addListener() {} }
+    },
+    runtime: { id: 't', async sendMessage() { return { ok: true }; },
+               onMessage: { addListener() {} } }
+  };
+  // Present, so the page does not take the "unsupported" branch by default.
+  window.showDirectoryPicker = function () { return Promise.reject({ name: 'AbortError' }); };
+</script>
+
+<script src="../core/store.js"></script>
+<script src="../core/folder.js"></script>
+<script src="../core/live.js"></script>
+
+<script>
+  /* The folder state is driven directly rather than through the filesystem.
+   * showDirectoryPicker needs a real gesture and a real disk, so what is worth
+   * testing here is that each state the folder can be in renders the right
+   * explanation and the right way out of it. */
+  let fakeStatus = { permission: 'missing', name: null };
+  AT.folder.status = async () => fakeStatus;
+  AT.folder.stored = async () => (fakeStatus.permission === 'missing' ? null : {});
+</script>
+
+<script src="../options/options.js"></script>
+
+<script>
+(async function () {
+  const lines = [];
+  function flush() { document.getElementById('checks').textContent = lines.join('\n'); }
+  function check(label, ok, detail) {
+    lines.push((ok ? 'PASS ' : 'FAIL ') + label + (detail ? ' :: ' + detail : ''));
+    flush();
+  }
+  const tick = (ms) => new Promise(r => setTimeout(r, ms || 60));
+  const app = document.getElementById('app');
+  const text = () => app.textContent;
+  const buttons = () => Array.from(app.querySelectorAll('button')).map(b => b.textContent);
+
+  // options.js renders on load; re-render by clicking a button that calls it.
+  async function showState(status) {
+    fakeStatus = status;
+    // Re-run the page's own render by dispatching through a fresh load path:
+    // the Save name button triggers a re-render without touching the folder.
+    const save = Array.from(app.querySelectorAll('button'))
+      .find(b => b.textContent === 'Save name');
+    if (save) save.click();
+    await tick(80);
+  }
+
+  try {
+    await tick(120);
+    check('no load-time errors', window.__errors.length === 0, window.__errors.join(' | '));
+
+    /* --- identity --- */
+    check('the settings page renders', text().indexOf('Your name') > -1);
+    const nameInput = app.querySelector('#name');
+    check('the name field is prefilled from storage',
+      nameInput && nameInput.value === 'Mark', nameInput && nameInput.value);
+
+    /* --- no folder yet --- */
+    check('it says no folder is chosen', text().indexOf('No folder chosen yet') > -1);
+    check('it offers to choose one',
+      buttons().some(b => b.indexOf('Choose a folder') === 0), buttons().join(' | '));
+    check('there is nothing to allow or forget yet',
+      !buttons().some(b => b === 'Allow access' || b === 'Forget folder'),
+      buttons().join(' | '));
+
+    /* --- the ordinary state after a browser restart ---------------------
+     * The handle survived; the grant did not. This must be distinguishable
+     * from a folder that has gone away, because the remedies differ. */
+    await showState({ permission: 'prompt', name: 'Reviews' });
+    check('a folder needing permission names itself',
+      text().indexOf('Reviews') > -1);
+    check('it explains that Chrome asks again after a restart',
+      /restart/i.test(text()), text().slice(0, 0) || 'no mention');
+    check('it offers a one-click Allow rather than a re-pick',
+      buttons().indexOf('Allow access') > -1, buttons().join(' | '));
+
+    /* --- the folder is gone --- */
+    await showState({ permission: 'gone', name: 'Reviews' });
+    check('a missing folder says it is unreachable',
+      /no longer reachable/i.test(text()));
+    check('it names the likely causes',
+      /moved|renamed|deleted/i.test(text()));
+    /* Allow would be useless here - the permission is not the problem - so
+     * offering it would send the reader down the wrong path. */
+    check('it does NOT offer Allow, which could not help',
+      buttons().indexOf('Allow access') === -1, buttons().join(' | '));
+    check('it does offer choosing a different folder',
+      buttons().some(b => b.indexOf('Choose a different folder') === 0));
+
+    /* --- working --- */
+    await showState({ permission: 'granted', name: 'Reviews' });
+    check('a working folder reads as ready', text().indexOf('Ready') > -1);
+    check('a working folder can be swapped or forgotten',
+      buttons().some(b => b.indexOf('Choose a different folder') === 0) &&
+      buttons().indexOf('Forget folder') > -1, buttons().join(' | '));
+    check('no Allow button when nothing needs allowing',
+      buttons().indexOf('Allow access') === -1);
+
+    /* --- the surprises are stated, not left to be discovered ------------- */
+    /* The one people hit within seconds: Chrome refuses Downloads with a
+     * dialog about "system files" that never reaches this extension, so
+     * warning beforehand is the only chance to explain it. */
+    check('it warns that Chrome blocks Downloads and friends',
+      /Downloads/.test(text()) && /system files/i.test(text()));
+    check('it gives the actual fix — use a subfolder',
+      /subfolder/i.test(text()));
+    check('it suggests a folder of its own up front',
+      /Annotate Reviews/.test(text()));
+
+    check('it warns that only the folder NAME is knowable',
+      /never its full path|full path/i.test(text()));
+    check('it says nothing is uploaded',
+      /nothing is uploaded/i.test(text()));
+
+    /* --- live data for a local AI ----------------------------------------
+     *
+     * The card exists to explain a setting the extension cannot verify, so the
+     * tests are mostly about whether it says so. A path field that looked
+     * authoritative would be worse than no field at all. */
+    check('the live-data card is rendered',
+      text().indexOf('Live data for a local AI') > -1);
+    const pathInput = app.querySelector('#folderpath');
+    check('it offers a path field', !!pathInput);
+    check('it explains why typing it is necessary at all',
+      /never its full path|name and nothing else/i.test(text()));
+    check('it warns that a typed path is not checked',
+      /passed on unchecked/i.test(text()));
+    check('it explains that a moved folder makes the path silently wrong',
+      /quietly goes wrong/i.test(text()));
+    check('it says leaving it blank is fine',
+      /Leave it blank/i.test(text()));
+    check('it says the live folder is removed when a session ends',
+      /deleted when a session ends/i.test(text()));
+    check('it says where the badge appears, so consent stays visible',
+      /badge/i.test(text()));
+
+    /* With nothing typed, the preview must not invent a path. */
+    check('with no path typed it says the agent must find the folder itself',
+      /locate it itself/i.test(text()), text().slice(-160));
+
+    pathInput.value = 'D:\\Work\\Reviews';
+    pathInput.dispatchEvent(new Event('input'));
+    await tick(20);
+    check('typing a path previews exactly what an agent will be told',
+      text().indexOf('D:\\Work\\Reviews\\live\\annotate-live.json') > -1);
+
+    const savePath = Array.from(app.querySelectorAll('button'))
+      .find(b => b.textContent === 'Save path');
+    check('it can be saved', !!savePath);
+    savePath.click();
+    await tick(80);
+    check('and the typed path is stored as typed',
+      (await AT.live.typedPath()) === 'D:\\Work\\Reviews',
+      String(await AT.live.typedPath()));
+
+    /* The name is mirrored into storage here because this is the ONLY context
+     * that can read the handle - a content script's indexedDB is the page's. */
+    check('rendering mirrors the folder name for other contexts to read',
+      (await AT.live.folderName()) === 'Reviews',
+      String(await AT.live.folderName()));
+
+    /* --- detecting the path ----------------------------------------------
+     *
+     * The detection MECHANISM is tested in live.html against a faked
+     * downloads API. What matters here is that the page offers it, and that
+     * it distinguishes a confirmed path from a typed one - which is the only
+     * reason the feature is worth having over typing. */
+    check('it offers to detect the path rather than only accepting typing',
+      buttons().some(b => b.indexOf('Detect automatically') === 0),
+      buttons().join(' | '));
+    check('it explains what detecting will do before you click it',
+      /Save dialog/i.test(text()) && /deletes it/i.test(text()));
+
+    check('a typed path is previewed as unchecked',
+      /passed on as typed, not checked/i.test(text()));
+
+    /* Stands in for the real one, which stores the path before returning -
+     * the page shows the result by re-rendering from storage, not by being
+     * handed it. */
+    AT.live.detectPath = async () => {
+      await AT.live.setTypedPath('E:\\Confirmed', true);
+      return { ok: true, path: 'E:\\Confirmed', verified: true };
+    };
+    const detect = Array.from(app.querySelectorAll('button'))
+      .find(b => b.textContent.indexOf('Detect automatically') === 0);
+    detect.click();
+    await tick(80);
+    check('a detected path fills the field in',
+      app.querySelector('#folderpath').value === 'E:\\Confirmed',
+      app.querySelector('#folderpath').value);
+    check('and is previewed as confirmed, not merely typed',
+      /confirmed to be this folder/i.test(text()), text().slice(-200));
+
+    /* Saving into the wrong folder is the mistake this can actually make, so
+     * the page has to name the folder they landed in - otherwise "that was
+     * wrong" is useless advice. */
+    AT.live.detectPath = async () => ({
+      ok: false, reason: 'elsewhere', savedTo: 'C:\\Users\\Someone\\Downloads'
+    });
+    detect.click();
+    await tick(80);
+    check('saving into the wrong folder says where it actually went',
+      /C:\\Users\\Someone\\Downloads/.test(text()), text().slice(-220));
+    check('and says nothing was stored',
+      /Nothing was stored/i.test(text()));
+
+    AT.live.detectPath = async () => ({ ok: false, reason: 'cancelled' });
+    detect.click();
+    await tick(80);
+    check('cancelling is reported plainly, not as an error',
+      /was not detected/i.test(text()));
+
+    /* --- a browser without the API --- */
+    await showState({ permission: 'unsupported', name: null });
+    check('an unsupported browser is told plainly',
+      /File System Access API/i.test(text()));
+    check('no folder buttons are offered where they cannot work',
+      !buttons().some(b => b.indexOf('Choose') === 0), buttons().join(' | '));
+  } catch (e) {
+    lines.push('FAIL threw after ' + lines.length + ' checks :: ' +
+      (e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e));
+  }
+  flush();
+})();
+</script>
+</body>
+</html>

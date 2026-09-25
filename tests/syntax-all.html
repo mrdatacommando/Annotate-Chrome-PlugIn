@@ -1,0 +1,61 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Annotate Tool - syntax check</title></head>
+<body>
+<div id="checks">pending</div>
+<script>
+/* Compiles every shipped JS file without running it.
+ *
+ * new Function(src) parses the source and throws SyntaxError on a problem, but
+ * never executes the body - so background.js, popup.js and viewer.js can be
+ * checked here even though they call chrome APIs that only exist inside a real
+ * extension context. This is the net that catches a typo in a file no other
+ * harness loads. */
+(async function () {
+  const FILES = [
+    '../background.js',
+    '../core/store.js',
+    '../core/anchor.js',
+    '../core/session.js',
+    '../core/box-tool.js',
+    '../core/zip.js',
+    '../core/report.js',
+    '../core/unzip.js',
+    '../core/lens.js',
+    '../content/live-dom.js',
+    '../core/live.js',
+    
+    
+    '../core/folder.js',
+    '../options/options.js',
+    '../tools/highlight.js',
+    '../tools/note.js',
+    '../tools/box.js',
+    '../tools/arrow.js',
+    '../content/overlay.js',
+    '../content/review-mode.js',
+    '../content/bridge.js',
+    '../review/review.js',
+    '../popup/popup.js',
+    '../viewer/viewer.js'
+  ];
+
+  const lines = [];
+  for (const path of FILES) {
+    const name = path.replace('../', '');
+    try {
+      const res = await fetch(path);
+      if (!res.ok) { lines.push('FAIL ' + name + ' :: HTTP ' + res.status); continue; }
+      const src = await res.text();
+      if (!src.trim()) { lines.push('FAIL ' + name + ' :: empty'); continue; }
+      new Function(src);
+      lines.push('PASS ' + name + ' :: ' + src.split('\n').length + ' lines');
+    } catch (e) {
+      lines.push('FAIL ' + name + ' :: ' + e.name + ': ' + e.message);
+    }
+  }
+  document.getElementById('checks').textContent = lines.join('\n');
+})();
+</script>
+</body>
+</html>

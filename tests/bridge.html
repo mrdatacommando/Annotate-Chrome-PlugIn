@@ -1,0 +1,257 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Annotate Tool - assistant bridge</title></head>
+<body>
+
+<div id="page"><p id="p1">A page an assistant might be helping with.</p></div>
+<div id="checks">pending</div>
+
+<script>
+  window.__errors = [];
+  window.onerror = function (m, s, l, c) {
+    window.__errors.push(m + ' @' + (s || '?').split('/').pop() + ':' + l + ':' + c);
+  };
+
+  const mem = {};
+  const storageListeners = [];
+
+  /* A session with one annotation on THIS page, and a loaded review bundle.
+   * The review items are what the review page publishes for the bridge - that
+   * page is chrome-extension:// and can never be read directly. */
+  mem.at_session = {
+    id: 's1', active: true, author: 'Mark',
+    startedAt: '2026-09-10T09:00:00.000Z',
+    pages: [{
+      url: location.href.split('#')[0],
+      title: 'Test page',
+      annotations: [{
+        id: 'a1', type: 'note', author: 'Mark',
+        text: 'Nav overlaps the hero', comment: '', unplaced: false,
+        anchor: { kind: 'point', selector: '#p1', offset: { x: 1, y: 1 } }
+      }]
+    }],
+    shots: [{ id: 'sh1', auto: true }]
+  };
+  mem.at_review = {
+    bundleName: 'annotate-session-2026-09-08-0900.zip',
+    updatedAt: '2026-09-10T10:00:00.000Z',
+    items: [{
+      id: 'r1', type: 'highlight', author: 'Sam',
+      text: 'Free forever', comment: 'Not true',
+      pageUrl: 'https://example.com/pricing', pageTitle: 'Pricing',
+      status: 'open',
+      replies: [{ author: 'Mark', at: '2026-09-09T10:00:00.000Z', text: 'Checking' }]
+    }]
+  };
+
+  window.chrome = {
+    storage: {
+      local: {
+        async get(k) {
+          if (k === null) return JSON.parse(JSON.stringify(mem));
+          const keys = Array.isArray(k) ? k : [k];
+          const out = {};
+          keys.forEach((key) => { if (key in mem) out[key] = JSON.parse(JSON.stringify(mem[key])); });
+          return out;
+        },
+        async set(o) {
+          const changes = {};
+          for (const key of Object.keys(o)) {
+            changes[key] = { oldValue: mem[key], newValue: o[key] };
+            mem[key] = JSON.parse(JSON.stringify(o[key]));
+          }
+          storageListeners.forEach((fn) => fn(changes, 'local'));
+        },
+        async remove(keys) {
+          const list = Array.isArray(keys) ? keys : [keys];
+          const changes = {};
+          list.forEach((k) => { changes[k] = { oldValue: mem[k], newValue: undefined }; delete mem[k]; });
+          storageListeners.forEach((fn) => fn(changes, 'local'));
+        },
+        async getBytesInUse() { return 0; }
+      },
+      onChanged: { addListener(fn) { storageListeners.push(fn); } }
+    },
+    runtime: { id: 't', async sendMessage() { return { ok: true }; },
+               onMessage: { addListener() {} } }
+  };
+</script>
+
+<script src="../core/store.js"></script>
+<script src="../core/anchor.js"></script>
+<script src="../core/session.js"></script>
+<script src="../content/bridge.js"></script>
+
+<script>
+(async function () {
+  const lines = [];
+  function flush() { document.getElementById('checks').textContent = lines.join('\n'); }
+  function check(label, ok, detail) {
+    lines.push((ok ? 'PASS ' : 'FAIL ') + label + (detail ? ' :: ' + detail : ''));
+    flush();
+  }
+  const tick = (ms) => new Promise(r => setTimeout(r, ms || 60));
+
+  /* Exactly how an assistant's JS tool would call it: post into the page's own
+   * window and wait for the reply. Nothing extension-specific on this side. */
+  let nextId = 1;
+  function ask(action, timeout) {
+    return new Promise((resolve) => {
+      const id = 'q' + (nextId++);
+      let done = false;
+      const finish = (v) => {
+        if (done) return;
+        done = true;
+        window.removeEventListener('message', onReply);
+        resolve(v);
+      };
+      function onReply(e) {
+        if (e.source !== window) return;
+        if (!e.data || e.data.type !== 'AT_BRIDGE_REPLY' || e.data.id !== id) return;
+        finish(e.data);
+      }
+      window.addEventListener('message', onReply);
+      window.postMessage({ type: 'AT_BRIDGE_REQUEST', id: id, action: action }, location.origin);
+      setTimeout(() => finish(null), timeout || 400);
+    });
+  }
+
+  try {
+    await tick(120);
+    check('no load-time errors', window.__errors.length === 0, window.__errors.join(' | '));
+
+    /* --- silent until connected -----------------------------------------
+     * The whole point of an opt-in bridge: an origin nobody connected must
+     * not answer at all, not even to say no. */
+    check('an unconnected origin does not answer', (await ask('ping')) === null);
+    check('and it knows it is not connected', AT.bridge._connected() === false);
+
+    /* --- connecting takes effect without a reload ------------------------
+     * The tab being connected is the one already in front of the user, so a
+     * button that needed a refresh would feel broken. */
+    await chrome.storage.local.set({
+      at_bridge: { origins: [location.origin], updatedAt: new Date().toISOString() }
+    });
+    await tick(80);
+    check('connecting reaches the open tab with no reload',
+      AT.bridge._connected() === true);
+
+    const ping = await ask('ping');
+    check('a connected origin answers', !!ping && ping.ok === true);
+    check('it names itself, so a caller knows what it reached',
+      ping && ping.tool === 'Annotate Tool' && ping.bridge === 'v1',
+      ping && ping.tool);
+    check('it reports the origin it answered on',
+      ping && ping.origin === location.origin, ping && ping.origin);
+    check('every reply declares it is read-only', ping && ping.readOnly === true);
+
+    /* --- the session ------------------------------------------------------ */
+    const summary = await ask('summary');
+    check('the session summary comes back', !!(summary && summary.summary));
+    /* Named `summary`, never `session`: an assistant's pipeline redacts by
+     * FIELD NAME, and `session` comes back "[BLOCKED: Sensitive key]" with
+     * the content never reaching the model. Verified in a live browser. */
+    /* The rule, measured against a live assistant: any key CONTAINING "auth"
+     * (case-insensitive - `coauthor` is blocked too), plus `session` and
+     * `token`. Every key in the payload, at every depth, has to clear it or
+     * the value is silently replaced before the model sees it. */
+    const REDACTED = /auth|session|token/i;
+    function everyKey(value, path, found) {
+      if (!value || typeof value !== 'object') return found;
+      Object.keys(value).forEach((k) => {
+        if (REDACTED.test(k)) found.push((path ? path + '.' : '') + k);
+        everyKey(value[k], (path ? path + '.' : '') + k, found);
+      });
+      return found;
+    }
+    const risky = everyKey(await ask('all'), '', []);
+    check('no field name anywhere in the payload would be redacted',
+      risky.length === 0, risky.join(', ') || 'none');
+
+    check('it carries who is annotating and how much',
+      summary.summary.by === 'Mark' && summary.summary.annotations === 1,
+      JSON.stringify(summary.summary.by) + ' / ' + summary.summary.annotations);
+    check('it includes the annotations on THIS page',
+      summary.summary.onThisPage.length === 1 &&
+      summary.summary.onThisPage[0].text === 'Nav overlaps the hero',
+      JSON.stringify(summary.summary.onThisPage.map(a => a.text)));
+    /* A projection, not the raw record: anchors and selectors are no use to a
+     * reader and would only bulk out the reply. */
+    check('anchors and selectors are not shipped',
+      !('anchor' in summary.summary.onThisPage[0]),
+      Object.keys(summary.summary.onThisPage[0]).join(','));
+
+    /* --- the review bundle ------------------------------------------------
+     * The review page is chrome-extension:// and unreadable by any other
+     * extension. This is how its CONTENT gets out. */
+    const review = await ask('review');
+    check('the review bundle comes back', !!(review && review.review));
+    check('it names the bundle',
+      review.review.bundle === 'annotate-session-2026-09-08-0900.zip',
+      review.review.bundle);
+    check('findings carry their text, status and author',
+      review.review.items[0].text === 'Free forever' &&
+      review.review.items[0].status === 'open' &&
+      review.review.items[0].by === 'Sam');
+    check('the discussion comes with them',
+      review.review.items[0].replies.length === 1 &&
+      review.review.items[0].replies[0].by === 'Mark');
+
+    const all = await ask('all');
+    check('one call can fetch both', !!(all.summary && all.review));
+
+    /* --- discoverable, and closed by default ------------------------------ */
+    const bogus = await ask('destroy');
+    check('an unknown action fails rather than doing something',
+      bogus && bogus.ok === false, bogus && bogus.error);
+    check('and it names the actions that DO exist',
+      bogus && Array.isArray(bogus.actions) && bogus.actions.indexOf('summary') > -1,
+      bogus && bogus.actions && bogus.actions.join(','));
+    /* Read-only is the design, not a default: there is no action that writes. */
+    check('no action can change anything',
+      AT.bridge._actions().every(a => ['ping','summary','review','all'].indexOf(a) > -1),
+      AT.bridge._actions().join(','));
+
+    /* --- messages that are not ours -------------------------------------- */
+    {
+      let sawStray = false;
+      const spy = (e) => { if (e.data && e.data.type === 'AT_BRIDGE_REPLY') sawStray = true; };
+      window.addEventListener('message', spy);
+      window.postMessage({ type: 'SOMETHING_ELSE', id: 'x' }, location.origin);
+      window.postMessage('a bare string', location.origin);
+      await tick(120);
+      window.removeEventListener('message', spy);
+      check('unrelated page messages are ignored', sawStray === false);
+    }
+
+    /* --- disconnecting ---------------------------------------------------- */
+    await chrome.storage.local.set({
+      at_bridge: { origins: [], updatedAt: new Date().toISOString() }
+    });
+    await tick(80);
+    check('disconnecting takes effect immediately too',
+      AT.bridge._connected() === false);
+    check('a disconnected origin goes silent again', (await ask('ping')) === null);
+
+    /* Ending a session must revoke every connection - a permission that
+     * outlives what it was granted for is one nobody remembers agreeing to. */
+    await chrome.storage.local.set({
+      at_bridge: { origins: [location.origin] }
+    });
+    await tick(60);
+    check('reconnected for the teardown check', AT.bridge._connected() === true);
+    await AT.session.end();
+    await tick(80);
+    check('ending the session revokes the connection',
+      AT.bridge._connected() === false);
+    check('and the stored list is gone',
+      !(await chrome.storage.local.get('at_bridge')).at_bridge);
+  } catch (e) {
+    lines.push('FAIL threw after ' + lines.length + ' checks :: ' +
+      (e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e));
+  }
+  flush();
+})();
+</script>
+</body>
+</html>

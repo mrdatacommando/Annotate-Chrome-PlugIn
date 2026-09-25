@@ -1,0 +1,15 @@
+# Signing keys and packaged builds — never commit these
+*.pem
+*.crx
+*.zip
+
+# Local session output (the tool writes bundles to a folder you pick)
+live/
+*.session.json
+
+# OS and editor cruft
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/

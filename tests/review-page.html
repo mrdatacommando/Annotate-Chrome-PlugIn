@@ -1,0 +1,78 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Annotate Tool - review page boot</title></head>
+<body>
+
+<!-- The review page's own shell, so its scripts run against the real DOM they
+     expect. A bare file:// load of review.html cannot work - it has no chrome
+     API - so this harness supplies one, which is also how the page behaves in
+     the extension. -->
+<div id="app"></div>
+<input type="file" id="file" hidden>
+<div id="checks">pending</div>
+
+<script>
+  window.__errors = [];
+  window.onerror = function (m, s, l, c) {
+    window.__errors.push(m + ' @' + (s || '?').split('/').pop() + ':' + l + ':' + c);
+  };
+  const mem = {};
+  window.chrome = {
+    storage: {
+      local: {
+        async get(k) {
+          if (k === null) return Object.assign({}, mem);
+          if (typeof k === 'string') return k in mem ? { [k]: mem[k] } : {};
+          return {};
+        },
+        async set(o) { Object.assign(mem, o); },
+        async remove(keys) { (Array.isArray(keys) ? keys : [keys]).forEach(k => delete mem[k]); }
+      },
+      onChanged: { addListener() {} }
+    },
+    runtime: { id: 't', async sendMessage() { return { ok: true }; },
+               onMessage: { addListener() {} } },
+    tabs: { async create() { return { id: 1 }; } },
+    downloads: { async download() { return 1; } }
+  };
+</script>
+
+<script src="../core/store.js"></script>
+<script src="../core/zip.js"></script>
+<script src="../core/unzip.js"></script>
+<script src="../core/report.js"></script>
+<script src="../core/lens.js"></script>
+<script src="../review/review.js"></script>
+
+<script>
+(async function () {
+  const lines = [];
+  function flush() { document.getElementById('checks').textContent = lines.join('\n'); }
+  function check(label, ok, detail) {
+    lines.push((ok ? 'PASS ' : 'FAIL ') + label + (detail ? ' :: ' + detail : ''));
+    flush();
+  }
+  const tick = (ms) => new Promise(r => setTimeout(r, ms || 60));
+
+  await tick(150); // let the async boot finish
+
+  check('no load-time errors', window.__errors.length === 0, window.__errors.join(' | '));
+
+  /* The regression this harness exists for: boot() awaits storage, and if that
+   * throws the page renders NOTHING with no explanation. It must always reach
+   * the drop zone. */
+  const app = document.getElementById('app');
+  check('the page reached its empty state rather than staying blank',
+    app.textContent.indexOf('Open a review bundle') > -1,
+    JSON.stringify(app.textContent.slice(0, 60)));
+  check('the drop zone offers a file picker',
+    app.textContent.indexOf('Choose a ZIP') > -1);
+
+  check('the magnifier module is available to the page', !!(window.AT && AT.lens));
+  check('the report module is available to the page', !!(window.AT && AT.report));
+
+  flush();
+})();
+</script>
+</body>
+</html>

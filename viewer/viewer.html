@@ -1,0 +1,96 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Annotate Tool — session</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9; --card: #fff; --ink: #16191f; --muted: #5c6470;
+    --line: #e2e5ea; --accent: #2f6f4f; --warn: #a8560f; --warnbg: #fdf1e3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171d; --card: #1c2029; --ink: #eef1f5; --muted: #98a1b0;
+      --line: #2a2f3a; --accent: #3a8a62; --warn: #ffb37a; --warnbg: #33240f;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 28px 20px 60px;
+    background: var(--bg); color: var(--ink);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; }
+  h1 { margin: 0 0 4px; font-size: 22px; }
+  .sub { margin: 0 0 20px; color: var(--muted); }
+
+  .card {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 12px; padding: 16px; margin-bottom: 14px;
+  }
+  .row { display: flex; flex-wrap: wrap; gap: 22px; }
+  .metric b { display: block; font-size: 22px; line-height: 1.2; }
+  .metric span { color: var(--muted); font-size: 12px; }
+
+  h2 { margin: 0 0 3px; font-size: 15px; }
+  .url {
+    margin: 0 0 12px; font-size: 12px; color: var(--muted);
+    word-break: break-all;
+  }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 9px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; }
+  tr:last-child td { border-bottom: 0; }
+  .chip {
+    display: inline-block; padding: 1px 7px; border-radius: 99px;
+    font-size: 11px; background: var(--line);
+  }
+  .dot {
+    display: inline-block; width: 9px; height: 9px;
+    border-radius: 50%; margin-right: 5px; vertical-align: -1px;
+  }
+  .unplaced {
+    background: var(--warnbg); color: var(--warn);
+    padding: 1px 7px; border-radius: 99px; font-size: 11px;
+  }
+  .banner {
+    background: var(--warnbg); color: var(--warn);
+    border-radius: 9px; padding: 10px 12px; margin-bottom: 14px; font-size: 13px;
+  }
+
+  .shots { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin-top: 12px; }
+  .shot img {
+    width: 100%; border-radius: 8px; border: 1px solid var(--line);
+    display: block; background: #fff;
+  }
+  .shot input {
+    width: 100%; margin-top: 6px; padding: 6px 8px;
+    border: 1px solid var(--line); border-radius: 7px;
+    background: var(--bg); color: inherit; font: inherit; font-size: 12px;
+  }
+
+  .actions { position: sticky; bottom: 0; padding-top: 14px; }
+  button {
+    padding: 10px 16px; border: 0; border-radius: 9px;
+    font: inherit; font-weight: 600; cursor: pointer;
+    background: var(--line); color: var(--ink);
+  }
+  button.go { background: var(--accent); color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  .note { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  .empty { color: var(--muted); font-style: italic; }
+</style>
+</head>
+<body>
+  <div class="wrap" id="app">Loading…</div>
+
+  <script src="../core/store.js"></script>
+  <script src="../core/session.js"></script>
+  <script src="../core/zip.js"></script>
+  <script src="../core/report.js"></script>
+  <script src="../core/folder.js"></script>
+  <script src="viewer.js"></script>
+</body>
+</html>

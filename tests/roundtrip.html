@@ -1,0 +1,498 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Annotate Tool - bundle round trip</title></head>
+<body>
+<div id="checks">pending</div>
+
+<script src="../core/zip.js"></script>
+<script src="../core/unzip.js"></script>
+<script src="../core/report.js"></script>
+
+<script>
+(async function () {
+  const lines = [];
+  function flush() { document.getElementById('checks').textContent = lines.join('\n'); }
+  // Flushed on every check, not just at the end: if the run hangs on an await
+  // rather than throwing, the output still shows how far it got.
+  function check(label, ok, detail) {
+    lines.push((ok ? 'PASS ' : 'FAIL ') + label + (detail ? ' :: ' + detail : ''));
+    flush();
+  }
+  function mark(note) { lines.push('.... ' + note); flush(); }
+
+  const PNG =
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ' +
+    'AAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+  /* Export -> zip bytes -> read back -> normalised report. This is the exact
+   * path a bundle takes from the annotator to the reviewer. */
+  async function exportAndRead(session, pixels) {
+    const built = AT.report.build(session, pixels);
+    const blob = AT.zip.create(built.files);
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    const entries = await AT.unzip.read(bytes);
+
+    const reportKey = Array.from(entries.keys()).find((k) => k.endsWith('report.json'));
+    const parsed = JSON.parse(AT.unzip.text(entries.get(reportKey)));
+    const prefix = reportKey.slice(0, reportKey.length - 'report.json'.length);
+
+    const shots = new Map();
+    entries.forEach((entry, key) => {
+      if (!/\.png$/i.test(key)) return;
+      shots.set(key.slice(prefix.length), AT.unzip.dataUrl(entry, 'image/png'));
+    });
+
+    return { built, entries, parsed, report: AT.report.normalise(parsed), shots };
+  }
+
+  try {
+    /* --- a realistic v2 session ---------------------------------------- */
+    const session = {
+      id: 's_rt', author: 'Mark', startedAt: '2026-09-06T09:00:00.000Z',
+      endedAt: '2026-09-06T09:30:00.000Z', active: false,
+      pages: [
+        {
+          url: 'https://example.com/pricing', title: 'Pricing',
+          viewport: { w: 1280, h: 800, dpr: 2 }, visitedAt: '2026-09-06T09:01:00.000Z',
+          annotations: [
+            { id: 'a1', type: 'highlight', color: '#f4c430', author: 'Mark',
+              text: 'Free forever', comment: 'Not true', unplaced: false,
+              createdAt: '2026-09-06T09:02:00.000Z',
+              anchor: { kind: 'quote', selector: 'main > p',
+                        quote: { prefix: 'is ', exact: 'Free forever', suffix: ' for' } },
+              shotId: 'sh1', rect: { x: 300, y: 1250, w: 90, h: 18 } },
+            { id: 'a2', type: 'note', color: '#ff8a3d', author: 'Mark',
+              text: 'Nav overlaps at 1280px', comment: '', unplaced: false,
+              createdAt: '2026-09-06T09:03:00.000Z',
+              anchor: { kind: 'point', selector: 'body', offset: { x: 4, y: 9 } },
+              shotId: 'sh2', rect: { x: 40, y: 60, w: 200, h: 60 } }
+          ]
+        },
+        {
+          url: 'https://example.com/about', title: 'About',
+          viewport: { w: 1280, h: 800, dpr: 2 }, visitedAt: '2026-09-06T09:20:00.000Z',
+          annotations: [
+            { id: 'a3', type: 'arrow', color: '#4aa3f0', author: 'Mark',
+              text: 'points at the wrong logo', comment: '', unplaced: true,
+              createdAt: '2026-09-06T09:21:00.000Z',
+              anchor: { kind: 'arrow',
+                        from: { kind: 'point', selector: 'h1', offset: { x: 0, y: 0 } },
+                        to: { kind: 'point', selector: 'img', offset: { x: 5, y: 5 } } },
+              shotId: null, rect: { x: 10, y: 20, w: 120, h: 80 },
+              // Made inside an iframe: its rect is in the frame's own
+              // coordinates, so the review page must not pin it.
+              frame: { path: [1], url: 'https://embed.example.com/widget' } }
+          ]
+        }
+      ],
+      shots: [
+        { id: 'sh1', pageUrl: 'https://example.com/pricing', note: '', auto: true,
+          createdAt: '2026-09-06T09:02:01.000Z',
+          viewport: { w: 1280, h: 800, dpr: 2 }, scroll: { x: 0, y: 1200 } },
+        { id: 'sh2', pageUrl: 'https://example.com/pricing', note: 'nav', auto: true,
+          createdAt: '2026-09-06T09:03:01.000Z',
+          viewport: { w: 1280, h: 800, dpr: 2 }, scroll: { x: 0, y: 0 } }
+      ]
+    };
+
+    const first = await exportAndRead(session, { sh1: PNG, sh2: PNG });
+
+    check('fresh export is schema v3', first.parsed.schemaVersion === 3,
+      'v' + first.parsed.schemaVersion);
+    check('annotations carry their author',
+      first.report.pages[0].annotations[0].author === 'Mark',
+      first.report.pages[0].annotations[0].author);
+    check('fresh export is NOT named as reviewed',
+      first.built.folder.indexOf('-reviewed') === -1, first.built.folder);
+    check('every annotation carries a review block',
+      first.report.pages.every(p => p.annotations.every(a => a.review && a.review.status === 'open')));
+    check('screenshots came back as images', first.shots.size === 2,
+      Array.from(first.shots.keys()).join(', '));
+
+    const items = AT.report.walkthrough(first.report);
+    check('walkthrough flattens pages in order', items.length === 3,
+      items.map(i => i.ann.id).join(','));
+    check('walkthrough keeps page context',
+      items[2].page.title === 'About' && items[2].pageIndex === 1);
+    check('walkthrough numbers items within their page',
+      items[0].indexOnPage === 0 && items[1].indexOnPage === 1 &&
+      items[2].indexOnPage === 0 && items[0].pageTotal === 2);
+
+    /* --- the pin maths -------------------------------------------------- */
+    {
+      const ann = first.report.pages[0].annotations[0];      // rect.y = 1250
+      const shot = first.report.pages[0].screenshots.find(s => s.id === 'sh1');
+      check('shot kept its scroll offset', shot && shot.scroll.y === 1200,
+        shot ? JSON.stringify(shot.scroll) : 'none');
+      // 1250 - 1200 = 50px down a 800px-tall viewport = 6.25%
+      const topPct = ((ann.rect.y - shot.scroll.y) / shot.viewport.h) * 100;
+      check('pin lands at the right place in the screenshot',
+        Math.abs(topPct - 6.25) < 0.01, topPct.toFixed(3) + '%');
+      check('pin uses percentages, so DPR scaling cannot break it',
+        topPct > 0 && topPct < 100);
+    }
+
+    /* --- review the bundle, then export it back ------------------------- */
+    first.report.pages[0].annotations[0].review = {
+      status: 'done',
+      replies: [{ author: 'Sam', at: '2026-09-06T10:00:00.000Z',
+                  text: 'Fixed in build 412 | verified' }],
+      reviewedAt: '2026-09-06T10:00:00.000Z'
+    };
+    first.report.pages[0].annotations[1].review =
+      { status: 'skipped', replies: [], reviewedAt: '2026-09-06T10:01:00.000Z' };
+
+    const back = AT.report.toSession(first.report, first.shots);
+    check('toSession recovered both screenshots', back.session.shots.length === 2);
+
+    const second = await exportAndRead(back.session, back.pixels);
+
+    check('a returned bundle is marked as a reply round',
+      second.built.folder.indexOf('-reply-1') > 0, second.built.folder);
+    check('reviewed export keeps the ORIGINAL session timestamp',
+      second.built.folder.indexOf('2026-09-06-') === 'annotate-session-'.length,
+      second.built.folder);
+
+    const j = second.parsed;
+    check('review summary counts are right',
+      j.review.done === 1 && j.review.skipped === 1 && j.review.open === 1,
+      JSON.stringify(j.review));
+    check('review.reviewed flag is set', j.review.reviewed === true);
+    check('replies survive the round trip',
+      j.pages[0].annotations[0].review.replies[0].text === 'Fixed in build 412 | verified',
+      JSON.stringify(j.pages[0].annotations[0].review.replies));
+    check('a reply keeps its author and timestamp',
+      j.pages[0].annotations[0].review.replies[0].author === 'Sam' &&
+      j.pages[0].annotations[0].review.replies[0].at === '2026-09-06T10:00:00.000Z');
+    check('the exported file is numbered by reply round',
+      second.built.folder.indexOf('-reply-1') > 0, second.built.folder);
+    check('statuses survive the round trip',
+      j.pages[0].annotations[0].review.status === 'done' &&
+      j.pages[0].annotations[1].review.status === 'skipped' &&
+      j.pages[1].annotations[0].review.status === 'open');
+    check('anchors survive two round trips intact',
+      j.pages[0].annotations[0].anchor.quote.exact === 'Free forever');
+    check('unplaced flag survives', j.pages[1].annotations[0].unplaced === true);
+    check('frame provenance survives the round trip',
+      j.pages[1].annotations[0].frame &&
+      j.pages[1].annotations[0].frame.url === 'https://embed.example.com/widget',
+      JSON.stringify(j.pages[1].annotations[0].frame));
+    check('shot linkage survives', j.pages[0].annotations[0].shotId === 'sh1');
+
+    const md2 = second.built.files.find(f => f.name.endsWith('report.md')).data;
+    check('reviewed report.md gains a Status column', md2.indexOf('| Status |') > -1);
+    check('reviewed report.md shows the outcome summary',
+      md2.indexOf('### Review outcome') > -1);
+    // The reply text moved out of the table into a blockquote, where a pipe
+    // needs no escaping - so assert it survives VERBATIM there instead.
+    check('a reply with a pipe survives verbatim in the discussion',
+      md2.indexOf('Fixed in build 412 | verified') > -1);
+
+    const md1 = first.built.files.find(f => f.name.endsWith('report.md')).data;
+    check('an UNreviewed export has no Status column', md1.indexOf('| Status |') === -1);
+    check('report.md renders the thread as a discussion',
+      md2.indexOf('#### Discussion') > -1 && md2.indexOf('> **Sam**') > -1);
+
+    /* --- unlimited rounds ------------------------------------------------
+     * The point of a thread rather than one reply field: a bundle should be
+     * able to go back and forth indefinitely without anything being lost. */
+    {
+      let carried = second.report;
+      let shots = second.shots;
+      const cast = ['Mark', 'Sam', 'Priya'];
+
+      for (let round = 0; round < cast.length; round++) {
+        mark('round ' + (round + 1) + ' of ' + cast.length);
+        carried.pages[0].annotations[0].review.replies.push({
+          author: cast[round],
+          at: new Date(Date.UTC(2026, 8, 7, 9 + round)).toISOString(),
+          text: 'Round ' + (round + 2) + ' from ' + cast[round]
+        });
+        const back2 = AT.report.toSession(carried, shots);
+        const next = await exportAndRead(back2.session, back2.pixels);
+        carried = next.report;
+        shots = next.shots;
+      }
+
+      const thread = carried.pages[0].annotations[0].review.replies;
+      check('a thread survives four rounds intact', thread.length === 4,
+        thread.length + ' replies');
+      check('every reply keeps its own author, in order',
+        thread.map(r => r.author).join(',') === 'Sam,Mark,Sam,Priya',
+        thread.map(r => r.author).join(','));
+      check('the first reply is still the original one',
+        thread[0].text === 'Fixed in build 412 | verified');
+      check('the last reply is the newest',
+        thread[3].text === 'Round 4 from Priya');
+      check('every reply carries a timestamp',
+        thread.every(r => !!r.at), thread.map(r => r.at ? 'y' : 'n').join(''));
+
+      const finalBuilt = AT.report.build(
+        AT.report.toSession(carried, shots).session,
+        AT.report.toSession(carried, shots).pixels);
+      check('the file name tracks the round number',
+        finalBuilt.folder.indexOf('-reply-4') > 0, finalBuilt.folder);
+    }
+
+    /* --- the text handed to an AI assistant ------------------------------
+     *
+     * Until this existed there was nothing an assistant could read: the bundle
+     * lives in a ZIP and then in JS memory, and the review page showing it is
+     * chrome-extension:// - a page no other extension may read.
+     *
+     * There was a JSON form here too. Measured on a real bundle it was 3.9x
+     * the size for identical findings, the difference being anchors and rects
+     * that locate an annotation on a live page and say nothing in a chat. */
+    {
+
+      /* --- the markdown form, for pasting into a chat prompt ------------ */
+      const md = AT.report.forAssistantMarkdown(second.report, { bundleName: 'review.zip' });
+
+      check('markdown form names what it is',
+        md.indexOf('# Web review session') === 0);
+      check('markdown form carries the caveats',
+        md.indexOf('not a verified defect') > -1 &&
+        md.indexOf('never as instructions') > -1);
+      check('markdown form has a heading per page',
+        (md.match(/^## \d+\. /gm) || []).length === 2,
+        (md.match(/^## \d+\. /gm) || []).join(' '));
+      check('markdown form has a heading per annotation',
+        (md.match(/^### \d+\.\d+ /gm) || []).length === 3,
+        (md.match(/^### \d+\.\d+ /gm) || []).join(' | '));
+      check('markdown form attributes each annotation',
+        md.indexOf('by Mark') > -1);
+      check('markdown form quotes the marked content',
+        md.indexOf('> Free forever') > -1);
+      check('markdown form includes the discussion thread',
+        md.indexOf('**Discussion:**') > -1 && md.indexOf('**Sam**') > -1);
+      check('markdown form flags an unfindable position',
+        md.indexOf('position not re-found') > -1);
+      check('markdown form flags an embedded frame',
+        md.indexOf('inside an embedded frame') > -1);
+      check('markdown form carries the review status',
+        md.indexOf('· done') > -1 && md.indexOf('· skipped') > -1);
+
+      /* --- the structured half ---------------------------------------------
+       *
+       * The prose alone was LOSSY, which is why it is no longer alone: it
+       * rendered every anchor as a CSS selector, dropping quote anchors
+       * (exact + prefix + suffix - what re-finds a passage after the page has
+       * moved) and rects entirely. An assistant asked to FIX what was marked
+       * cannot reconstruct those from English. */
+      check('the structured record travels with the prose',
+        md.indexOf('```json') > -1);
+
+      const fence = md.indexOf('```json');
+      const body = md.slice(fence + 7, md.indexOf('```', fence + 7));
+      let parsed = null;
+      try { parsed = JSON.parse(body); } catch (_) {}
+      check('and the embedded JSON actually parses', !!parsed);
+
+      if (parsed) {
+        check('every annotation is present, not just the current one',
+          parsed.pages.reduce((n, p) => n + p.annotations.length, 0) === 3,
+          parsed.pages.map((p) => p.annotations.length).join('+'));
+
+        const a0 = parsed.pages[0].annotations[0];
+        /* THE reason the JSON is here. A quote anchor carries the surrounding
+         * text, so a marked passage can be re-found after the page changes -
+         * a selector alone cannot do that. */
+        check('a quote anchor keeps its surrounding context',
+          a0.anchor.kind === 'quote' && a0.anchor.quote.exact === 'Free forever' &&
+          !!a0.anchor.quote.prefix && !!a0.anchor.quote.suffix,
+          JSON.stringify(a0.anchor.quote));
+        check('and the rect the prose used to drop',
+          a0.rect && a0.rect.w === 90 && a0.rect.h === 18, JSON.stringify(a0.rect));
+        check('the screenshot is named per annotation',
+          !!a0.screenshot, a0.screenshot);
+        check('review status and the whole reply thread come through',
+          a0.status === 'done' && a0.replies.length >= 1 &&
+          a0.replies[0].author === 'Sam',
+          a0.status + ', ' + a0.replies.length + ' replies');
+        check('a region highlight is flagged without a reader knowing the anchor rule',
+          a0.regionHighlight === false);
+        check('an iframe annotation says so, and names the frame',
+          parsed.pages[1].annotations[0].inEmbeddedFrame === true &&
+          /embed\.example\.com/.test(parsed.pages[1].annotations[0].frameUrl));
+      }
+
+      /* The selector is no longer printed in the prose - it is inside the
+       * anchor below, in full. Duplicating a lossy summary of it beside the
+       * real thing cost a couple of hundred characters an annotation. */
+      check('the prose no longer repeats a CSS selector per annotation',
+        md.indexOf('<sub>`main > p`') === -1);
+
+      /* Bounded, so the readable half cannot quietly grow until the paste is
+       * mostly preamble. */
+      const raw = JSON.stringify(second.report);
+      check('prose overhead stays a sane fraction of the data it wraps',
+        md.length < raw.length * 3,
+        md.length + ' vs ' + raw.length + ' raw (' +
+        Math.round(md.length / raw.length * 100) + '%)');
+
+      /* --- pointing at the ZIP as well as describing it ------------------
+       *
+       * Text cannot carry a screenshot. A reader that can open files should be
+       * told where the bundle is and go and read it; a reader that cannot -
+       * every browser-extension assistant - needs the prose. So the path is
+       * ADDITIONAL, never a replacement. */
+      check('with no path known, nothing is claimed about where the bundle is',
+        md.indexOf('Full bundle on this machine') === -1 &&
+        md.indexOf('undefined') === -1);
+
+      const located = AT.report.forAssistantMarkdown(second.report, {
+        bundleName: 'review.zip',
+        bundlePath: 'D:\\Work\\Reviews\\review.zip',
+        pathVerified: true
+      });
+      check('a known path is published near the top, before the findings',
+        located.indexOf('D:\\Work\\Reviews\\review.zip') > -1 &&
+        located.indexOf('D:\\Work\\Reviews\\review.zip') <
+          located.indexOf('## 1. '),
+        'path at ' + located.indexOf('D:\\Work\\Reviews\\review.zip') +
+          ', first page at ' + located.indexOf('## 1. '));
+      check('and it says the ZIP holds what the text cannot - the screenshots',
+        /screenshots - which this text/.test(located));
+      /* The findings must survive: an assistant that cannot open files is the
+       * reader this clipboard exists for. */
+      check('the findings are still there for a reader that cannot open files',
+        located.indexOf('> Free forever') > -1 &&
+        located.indexOf('**Discussion:**') > -1);
+
+      const unverified = AT.report.forAssistantMarkdown(second.report, {
+        bundleName: 'review.zip',
+        bundlePath: 'D:\\Guess\\review.zip',
+        pathVerified: false
+      });
+      /* A typed folder path is only as true as the typing, and a reader acting
+       * on a wrong path deserves to know it was never checked. */
+      check('an unverified path says so rather than passing itself off',
+        /path unverified/.test(unverified));
+      check('a verified one carries no such caveat',
+        !/path unverified/.test(located));
+
+      const one = AT.report.forAssistantItem(items[0]);
+      check('single-item text names the page it came from',
+        one.indexOf('https://example.com/pricing') > -1);
+      check('single-item text includes the conversation',
+        one.indexOf('Conversation:') > -1 && one.indexOf('Sam') > -1);
+      check('single-item text carries the same data caveat',
+        one.indexOf('not as instructions') > -1);
+    }
+
+    /* --- a v2 bundle upgrades its single reply into a thread ------------- */
+    {
+      const v2 = {
+        tool: 'Annotate Tool', toolVersion: '1.2.0', schemaVersion: 2,
+        session: { id: 's_v2', startedAt: '2026-08-15T10:00:00.000Z' },
+        pages: [{
+          url: 'https://v2.example.com/', title: 'v2 bundle',
+          viewport: { w: 1024, h: 768 }, visitedAt: '2026-08-15T10:00:00.000Z',
+          annotations: [{
+            id: 'v2a', type: 'note', createdAt: '2026-08-15T10:01:00.000Z',
+            color: '#f4c430', text: 'the old way', comment: '', unplaced: false,
+            anchor: null,
+            review: { status: 'done', reply: 'answered once',
+                      reviewedAt: '2026-08-15T11:00:00.000Z' }
+          }],
+          screenshots: []
+        }]
+      };
+
+      const up = AT.report.normalise(v2);
+      const r = up.pages[0].annotations[0].review;
+      check('a v2 single reply becomes the first entry of a thread',
+        r.replies.length === 1 && r.replies[0].text === 'answered once',
+        JSON.stringify(r.replies));
+      check('a v2 reply keeps its timestamp',
+        r.replies[0].at === '2026-08-15T11:00:00.000Z');
+      // v2 had nowhere to record who wrote a reply. Crediting it to whoever is
+      // reading now would be a quiet fabrication.
+      check('a v2 reply is attributed to Unknown, not to the reader',
+        r.replies[0].author === 'Unknown', r.replies[0].author);
+      check('a v2 status survives', r.status === 'done');
+      check('v2 is flagged as upgraded', up.upgradedFrom === 2);
+
+      // And it can be replied to from here on.
+      r.replies.push({ author: 'Mark', at: '2026-09-06T12:00:00.000Z', text: 'and again' });
+      const out = AT.report.toSession(up, new Map());
+      const rebuilt = AT.report.build(out.session, out.pixels);
+      const rej = JSON.parse(rebuilt.files.find(f => f.name.endsWith('report.json')).data);
+      check('an upgraded v2 bundle can carry on the conversation',
+        rej.pages[0].annotations[0].review.replies.length === 2,
+        JSON.stringify(rej.pages[0].annotations[0].review.replies.map(x => x.author)));
+    }
+
+    /* --- screenshots must be byte-identical after two trips ------------- */
+    {
+      const original = AT.zip.dataUrlToBytes(PNG);
+      const shotKey = Array.from(second.shots.keys())[0];
+      const after = AT.zip.dataUrlToBytes(second.shots.get(shotKey));
+      let identical = original.length === after.length;
+      for (let i = 0; identical && i < original.length; i++) {
+        if (original[i] !== after[i]) identical = false;
+      }
+      check('screenshot pixels are byte-identical after two round trips',
+        identical, original.length + ' vs ' + after.length);
+    }
+
+    /* --- a v1 bundle must still open ------------------------------------ */
+    {
+      // Exactly what v1.1.0 wrote: no schemaVersion 2, no review/shotId/rect.
+      const v1 = {
+        tool: 'Annotate Tool', toolVersion: '1.1.0', schemaVersion: 1,
+        session: { id: 's_old', startedAt: '2026-08-01T10:00:00.000Z',
+                   pageCount: 1, annotationCount: 1 },
+        pages: [{
+          url: 'https://old.example.com/', title: 'Old bundle',
+          viewport: { w: 1024, h: 768 }, visitedAt: '2026-08-01T10:00:00.000Z',
+          annotations: [{
+            id: 'old1', type: 'highlight', createdAt: '2026-08-01T10:01:00.000Z',
+            color: '#f4c430', text: 'legacy text', comment: 'legacy comment',
+            unplaced: false,
+            anchor: { kind: 'quote', selector: 'p', quote: { prefix: '', exact: 'legacy text', suffix: '' } }
+          }],
+          screenshots: []
+        }]
+      };
+
+      const up = AT.report.normalise(v1);
+      check('a v1 bundle still opens', !!up && up.pages.length === 1);
+      check('v1 is flagged so the UI can explain missing pins', up.upgradedFrom === 1);
+      check('v1 annotations get a default review block',
+        up.pages[0].annotations[0].review.status === 'open');
+      check('v1 content is preserved untouched',
+        up.pages[0].annotations[0].text === 'legacy text' &&
+        up.pages[0].annotations[0].comment === 'legacy comment');
+      check('v1 missing fields become null, not undefined',
+        up.pages[0].annotations[0].shotId === null &&
+        up.pages[0].annotations[0].rect === null);
+
+      const upItems = AT.report.walkthrough(up);
+      check('a v1 bundle can be walked through', upItems.length === 1);
+    }
+
+    /* --- garbage in, clear error out ------------------------------------ */
+    {
+      function rejects(input, expect, label) {
+        try {
+          AT.report.normalise(input);
+          check(label, false, 'no error thrown');
+        } catch (e) {
+          check(label, e.message.indexOf(expect) > -1, e.message);
+        }
+      }
+      rejects(null, 'does not look like', 'null is rejected');
+      rejects({ hello: 'world' }, 'does not look like', 'a non-report object is rejected');
+      rejects({ schemaVersion: 99, pages: [] }, 'newer version',
+        'a future schema is rejected by name, not silently mangled');
+    }
+  } catch (e) {
+    lines.push('FAIL threw after ' + lines.length + ' checks :: ' +
+      (e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e));
+  }
+  flush();
+})();
+</script>
+</body>
+</html>

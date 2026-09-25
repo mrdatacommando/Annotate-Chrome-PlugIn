@@ -1,0 +1,60 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Annotate Tool - parse check</title></head>
+<body>
+<div id="out">pending</div>
+
+<!-- Minimal chrome.* stub. These modules must LOAD without touching chrome,
+     so any reference at load time shows up as a failure here rather than as a
+     silent dead content script in the browser. -->
+<script>
+  window.__errors = [];
+  window.onerror = function (m, src, line, col) {
+    window.__errors.push(m + ' @' + (src || '?').split('/').pop() + ':' + line + ':' + col);
+  };
+  const mem = {};
+  window.chrome = {
+    storage: {
+      local: {
+        async get(k) {
+          if (k === null) return Object.assign({}, mem);
+          if (typeof k === 'string') return k in mem ? { [k]: mem[k] } : {};
+          return {};
+        },
+        async set(obj) { Object.assign(mem, obj); },
+        async remove(keys) {
+          (Array.isArray(keys) ? keys : [keys]).forEach((k) => delete mem[k]);
+        },
+        async getBytesInUse() { return JSON.stringify(mem).length; }
+      },
+      onChanged: { addListener() {} }
+    },
+    runtime: { sendMessage: async () => ({}), onMessage: { addListener() {} }, id: 'test' }
+  };
+</script>
+
+<script src="../core/store.js"></script>
+<script src="../core/anchor.js"></script>
+<script src="../core/session.js"></script>
+<script src="../core/zip.js"></script>
+<script src="../core/report.js"></script>
+
+<script>
+(async function () {
+  const lines = [];
+  function check(label, ok, detail) {
+    lines.push((ok ? 'PASS ' : 'FAIL ') + label + (detail ? ' :: ' + detail : ''));
+  }
+
+  check('no load-time errors', window.__errors.length === 0, window.__errors.join(' | '));
+  check('AT.store present', !!(window.AT && AT.store));
+  check('AT.anchor present', !!(window.AT && AT.anchor));
+  check('AT.session present', !!(window.AT && AT.session));
+  check('AT.zip present', !!(window.AT && AT.zip));
+  check('AT.report present', !!(window.AT && AT.report));
+
+  document.getElementById('out').textContent = lines.join('\n');
+})();
+</script>
+</body>
+</html>

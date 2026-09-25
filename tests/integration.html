@@ -1,0 +1,516 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Annotate Tool - integration</title></head>
+<body>
+
+<div id="page">
+  <article id="art">
+    <h2 id="h">Quarterly report</h2>
+    <p id="para">Revenue grew by forty percent across every region this quarter.</p>
+    <p id="para2">Costs remained flat against the previous period.</p>
+    <!-- Dragging across an image yields no text selection, which is exactly
+         the case the region highlight exists for. -->
+    <img id="pic" alt="Sales chart" width="120" height="80"
+         src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==">
+  </article>
+</div>
+
+<div id="checks">pending</div>
+
+<script>
+  window.__errors = [];
+  window.onerror = function (m, s, l, c) {
+    window.__errors.push(m + ' @' + (s || '?').split('/').pop() + ':' + l + ':' + c);
+  };
+  const mem = {};
+  const listeners = [];
+  window.chrome = {
+    storage: {
+      local: {
+        async get(k) {
+          if (k === null) return JSON.parse(JSON.stringify(mem));
+          if (typeof k === 'string') return k in mem ? { [k]: JSON.parse(JSON.stringify(mem[k])) } : {};
+          return {};
+        },
+        async set(o) {
+          for (const key of Object.keys(o)) mem[key] = JSON.parse(JSON.stringify(o[key]));
+        },
+        async remove(keys) { (Array.isArray(keys) ? keys : [keys]).forEach(k => delete mem[k]); },
+        async getBytesInUse() { return 0; }
+      },
+      onChanged: { addListener(fn) { listeners.push(fn); } }
+    },
+    runtime: {
+      id: 'test',
+      // Stands in for the service worker: returns a 1x1 PNG so the capture
+      // path can be exercised without a real browser tab.
+      async sendMessage(msg) {
+        if (msg.type === 'AT_CAPTURE') {
+          return { ok: true, dataUrl:
+            'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ' +
+            'AAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' };
+        }
+        return { ok: true };
+      },
+      onMessage: { addListener() {} }
+    }
+  };
+</script>
+
+<script src="../core/store.js"></script>
+<script src="../core/anchor.js"></script>
+<script src="../core/session.js"></script>
+<script src="../core/box-tool.js"></script>
+
+<script src="../tools/highlight.js"></script>
+<script src="../tools/note.js"></script>
+<script src="../tools/box.js"></script>
+<script src="../tools/arrow.js"></script>
+<script src="../content/overlay.js"></script>
+
+<script>
+(async function () {
+  const lines = [];
+  function check(label, ok, detail) {
+    lines.push((ok ? 'PASS ' : 'FAIL ') + label + (detail ? ' :: ' + detail : ''));
+  }
+  // Always flush what we have, even on a throw - a bare "pending" tells us
+  // nothing about how far the run got.
+  function flush() {
+    document.getElementById('checks').textContent = lines.join('\n');
+  }
+  try {
+  const tick = (ms) => new Promise(r => setTimeout(r, ms || 30));
+
+  // Clicks at the centre of an element, the way a user would.
+  function clickOn(id, dx, dy) {
+    const rect = document.getElementById(id).getBoundingClientRect();
+    const x = rect.left + (dx == null ? rect.width / 2 : dx);
+    const y = rect.top + (dy == null ? rect.height / 2 : dy);
+    document.getElementById(id).dispatchEvent(new MouseEvent('click', {
+      bubbles: true, cancelable: true, clientX: x, clientY: y
+    }));
+    return { x, y };
+  }
+
+  await tick(60); // let the overlay boot
+
+  check('no load-time errors', window.__errors.length === 0, window.__errors.join(' | '));
+  check('overlay mounted a host element', !!document.getElementById('at-overlay-host'));
+  check('shadow root is closed to the page',
+    document.getElementById('at-overlay-host').shadowRoot === null);
+  check('overlay exposes its own root internally', !!AT.overlay.shadow);
+  check('toolbar hidden with no session', AT.overlay.shadow.querySelector('.bar').hidden === true);
+
+  /* --- start a session ------------------------------------------------ */
+  await AT.session.start();
+  await AT.overlay.setActive(true);
+  await tick();
+  check('toolbar visible once a session starts',
+    AT.overlay.shadow.querySelector('.bar').hidden === false);
+
+  /* --- sticky note ---------------------------------------------------- */
+  AT.overlay.armTool('note');
+  clickOn('para2', 20, 10);
+  await tick(60);
+
+  let counts = await AT.session.counts();
+  check('clicking with the note tool created one annotation',
+    counts.annotations === 1, JSON.stringify(counts));
+  check('note element rendered into the overlay layer',
+    AT.overlay.layer.querySelectorAll('.note').length === 1);
+  check('tool disarms after placing', AT.overlay.armed === null);
+
+  /* --- highlight ------------------------------------------------------ */
+  AT.overlay.armTool('highlight');
+  {
+    const node = document.getElementById('para').firstChild;
+    const r = document.createRange();
+    r.setStart(node, node.nodeValue.indexOf('forty percent'));
+    r.setEnd(node, node.nodeValue.indexOf('forty percent') + 'forty percent'.length);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(r);
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  }
+  await tick(80);
+
+  counts = await AT.session.counts();
+  check('selecting text created a highlight', counts.annotations === 2,
+    JSON.stringify(counts));
+  const marks = document.querySelectorAll('at-hl');
+  check('highlight wrapped the page text', marks.length === 1,
+    'marks=' + marks.length);
+  check('highlight covers exactly the selected words',
+    marks.length === 1 && marks[0].textContent === 'forty percent',
+    marks.length ? JSON.stringify(marks[0].textContent) : 'none');
+  check('page text is unchanged by highlighting',
+    document.getElementById('para').textContent ===
+      'Revenue grew by forty percent across every region this quarter.');
+
+  /* --- screenshot ----------------------------------------------------- */
+  /* Auto-capture is deliberately fire-and-forget so annotating never blocks
+   * on a screenshot, which means the test has to wait for it rather than
+   * assuming it finished. Generous, since each capture holds two animation
+   * frames plus a storage write. */
+  await tick(600);
+
+  // Annotations auto-capture, so shots already exist before this manual one.
+  const shotsBefore = (await AT.session.counts()).shots;
+  check('annotations auto-captured a screenshot each', shotsBefore > 0,
+    shotsBefore + ' shots from ' + (await AT.session.counts()).annotations + ' annotations');
+
+  const autoShot = (await AT.session.get()).shots.find(s => s.auto);
+  check('auto shots are flagged as auto', !!autoShot);
+  check('auto shot records scroll offset for pinning',
+    autoShot && autoShot.scroll && typeof autoShot.scroll.y === 'number',
+    autoShot ? JSON.stringify(autoShot.scroll) : 'none');
+
+  const hlAnn = (await AT.session.annotationsForPage()).find(a => a.type === 'highlight');
+  check('annotation is linked to its screenshot', !!(hlAnn && hlAnn.shotId), hlAnn && hlAnn.shotId);
+  check('annotation records its page rect for the pin',
+    !!(hlAnn && hlAnn.rect && hlAnn.rect.w > 0), hlAnn ? JSON.stringify(hlAnn.rect) : 'none');
+
+  await AT.overlay.capture();
+  await tick(60);
+  counts = await AT.session.counts();
+  check('manual capture adds another screenshot', counts.shots === shotsBefore + 1,
+    JSON.stringify(counts));
+  const stored = await AT.store.getShot((await AT.session.get()).shots[0].id);
+  check('screenshot pixels were written to storage', !!stored && stored.indexOf('data:image/png') === 0);
+
+  /* --- restore after a simulated reload -------------------------------- */
+  {
+    // Tear down every visual, exactly as a page reload would.
+    AT.tools.highlight._unwrap(
+      (await AT.session.annotationsForPage()).find(a => a.type === 'highlight').id);
+    AT.overlay.layer.replaceChildren();
+    AT.overlay.svg.replaceChildren();
+    check('teardown removed the visuals',
+      document.querySelectorAll('at-hl').length === 0 &&
+      AT.overlay.layer.querySelectorAll('.note').length === 0);
+
+    await AT.overlay.restoreAll();
+    await tick(80);
+
+    check('restore re-created the note',
+      AT.overlay.layer.querySelectorAll('.note').length === 1);
+    const remarks = document.querySelectorAll('at-hl');
+    check('restore re-created the highlight on the right words',
+      remarks.length === 1 && remarks[0].textContent === 'forty percent',
+      remarks.length ? JSON.stringify(remarks[0].textContent) : 'none');
+
+    const anns = await AT.session.annotationsForPage();
+    check('nothing was marked unplaced on a clean restore',
+      anns.every(a => !a.unplaced),
+      anns.map(a => a.type + ':' + !!a.unplaced).join(', '));
+  }
+
+  /* --- an annotation whose target has vanished ------------------------- */
+  {
+    document.getElementById('para').remove();
+    AT.overlay.layer.replaceChildren();
+    AT.overlay.svg.replaceChildren();
+    await AT.overlay.restoreAll();
+    await tick(80);
+
+    const anns = await AT.session.annotationsForPage();
+    const hl = anns.find(a => a.type === 'highlight');
+    check('a highlight whose text is gone is flagged unplaced, not deleted',
+      !!hl && hl.unplaced === true, hl ? 'unplaced=' + hl.unplaced : 'annotation was lost!');
+    check('the unplaced annotation keeps its content for export',
+      hl && hl.text === 'forty percent', hl ? JSON.stringify(hl.text) : 'none');
+  }
+
+  /* --- REGRESSION: saving through the popover ---------------------------
+   * The popover's outside-click handler used to close on mousedown before a
+   * button's click could fire, because a CLOSED shadow root retargets
+   * e.target to the host and `pop.contains(e.target)` was never true. Every
+   * Save was silently discarded. The mousedown below is what reproduces it -
+   * calling .click() alone would pass even with the bug present. */
+  {
+    const noteNode = AT.overlay.layer.querySelector('.note');
+    const r = noteNode.getBoundingClientRect();
+    const at = { clientX: r.left + 5, clientY: r.top + 5, bubbles: true, composed: true };
+
+    noteNode.dispatchEvent(new MouseEvent('mousedown', at));
+    window.dispatchEvent(new MouseEvent('mouseup', at)); // no movement -> edit
+    await tick(40);
+
+    const ta = AT.overlay.shadow.querySelector('.pop textarea');
+    check('clicking a note opens the editor', !!ta);
+
+    const LONG = 'Nav overlaps the hero banner below 1280px wide, and the ' +
+                 'call to action ends up unreachable on a laptop screen.';
+    ta.value = LONG;
+
+    const save = Array.from(AT.overlay.shadow.querySelectorAll('.pop .btn'))
+      .find(b => b.textContent === 'Save');
+    check('editor has a Save button', !!save);
+
+    // Real sequence: mousedown (which used to kill the popover) then click.
+    save.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
+    check('popover survives mousedown on its own button',
+      !!AT.overlay.shadow.querySelector('.pop'));
+    save.click();
+    await tick(60);
+
+    const anns = await AT.session.annotationsForPage();
+    const note = anns.find(a => a.type === 'note');
+    check('Save actually persisted the note text', note && note.text === LONG,
+      note ? JSON.stringify((note.text || '').slice(0, 30)) : 'none');
+
+    const face = AT.overlay.layer.querySelector('.note');
+    check('note face no longer shows the placeholder',
+      face.textContent.indexOf('Click to write') === -1, JSON.stringify(face.textContent));
+    check('note face previews the opening words',
+      face.textContent.indexOf('Nav overlaps the hero banner') === 0,
+      JSON.stringify(face.textContent));
+    check('long note text is truncated on the face',
+      face.textContent.length < LONG.length && face.textContent.endsWith('…'),
+      face.textContent.length + ' of ' + LONG.length + ' chars');
+    check('full note text is available on hover', face.title === LONG);
+    check('saved note is no longer styled as empty',
+      !face.classList.contains('empty'));
+  }
+
+  /* --- REGRESSION: the arrow must actually draw -------------------------
+   * .arrows had `width: 0` from CSS, which overrides the width ATTRIBUTE and
+   * collapsed the viewBox viewport, scaling every arrow to nothing. */
+  {
+    AT.overlay.syncLayer();
+    const svgRect = AT.overlay.svg.getBoundingClientRect();
+    check('arrow layer has real dimensions',
+      svgRect.width > 0 && svgRect.height > 0,
+      Math.round(svgRect.width) + 'x' + Math.round(svgRect.height));
+
+    const before = (await AT.session.counts()).annotations;
+
+    /* Wrapped BEFORE the arrow is drawn, because the bug was a capture at
+     * DRAW time - instrumenting afterwards would miss the very call under
+     * test. autoCapture is watched rather than the AT_CAPTURE message: a
+     * capture close in time and scroll position to a previous one is reused
+     * rather than retaken, so counting messages reports zero for a shot that
+     * was correctly attached. */
+    const popOpen = () => !!AT.overlay.shadow.querySelector('.pop');
+    const captureCalls = [];
+    const realAutoCapture = AT.overlay.autoCapture;
+    AT.overlay.autoCapture = function (id) {
+      captureCalls.push(popOpen());
+      return realAutoCapture.apply(this, arguments);
+    };
+
+    AT.overlay.armTool('arrow');
+    const h = document.getElementById('h').getBoundingClientRect();
+    const pic = document.getElementById('pic').getBoundingClientRect();
+    document.getElementById('h').dispatchEvent(new MouseEvent('click', {
+      bubbles: true, cancelable: true, clientX: h.left + 4, clientY: h.top + 4 }));
+    await tick(40);
+    document.getElementById('pic').dispatchEvent(new MouseEvent('click', {
+      bubbles: true, cancelable: true, clientX: pic.left + 10, clientY: pic.top + 10 }));
+    await tick(60);
+
+    check('two clicks created one arrow',
+      (await AT.session.counts()).annotations === before + 1);
+
+    const group = AT.overlay.svg.querySelector('g[data-at-id]');
+    check('arrow group was drawn into the SVG', !!group);
+    const shaft = group && group.querySelector('line[stroke]:not([stroke="transparent"])');
+    const head = group && group.querySelector('polygon');
+    check('arrow has a visible shaft', !!shaft);
+    check('arrow has an arrowhead polygon', !!head && !!head.getAttribute('points'));
+    // The decisive check: zero-length geometry is what "does not draw" means.
+    if (shaft) {
+      const dx = shaft.getAttribute('x2') - shaft.getAttribute('x1');
+      const dy = shaft.getAttribute('y2') - shaft.getAttribute('y1');
+      check('arrow shaft has non-zero length',
+        Math.abs(dx) + Math.abs(dy) > 1, 'dx=' + dx.toFixed(1) + ' dy=' + dy.toFixed(1));
+    }
+    if (group) {
+      const box = group.getBoundingClientRect();
+      check('arrow occupies real screen area',
+        box.width > 1 || box.height > 1,
+        Math.round(box.width) + 'x' + Math.round(box.height));
+    }
+
+    /* --- REGRESSION: the shot must be taken AFTER the editor closes -------
+     *
+     * Drawing an arrow opens its editor immediately, and capture used to fire
+     * at draw time. Two things went wrong, and the harness checks both.
+     *
+     * The subtle one is a RACE: withChromeHidden() collects the popover to
+     * hide it, THEN waits two animation frames before capturing. Capture
+     * started when no popover existed yet, and openEditor created one during
+     * that wait - so the editor was never in the hide list and appeared in the
+     * finished screenshot, covering the very thing being annotated.
+     *
+     * Asserted by watching WHEN the capture request reaches the worker
+     * relative to the editor being on screen, because that ordering is the
+     * actual fix - a test that only checked a shot exists passed throughout. */
+    {
+      check('drawing an arrow opens its editor', popOpen());
+
+      // Generous: a draw-time capture would already have fired by now.
+      await tick(400);
+      check('no screenshot is requested while the editor is still open',
+        captureCalls.length === 0,
+        captureCalls.length + ' call(s), editor open at each: ' +
+          JSON.stringify(captureCalls));
+
+      const arrowAnn = (await AT.session.annotationsForPage())
+        .find((a) => a.type === 'arrow');
+      check('and the arrow has no screenshot yet', !arrowAnn.shotId, arrowAnn.shotId);
+
+      // Save closes the editor, which is what should trigger the capture.
+      const saveBtn = Array.from(AT.overlay.shadow.querySelectorAll('.pop button'))
+        .find((b) => b.textContent === 'Save');
+      const ta = AT.overlay.shadow.querySelector('.pop textarea');
+      if (ta) ta.value = 'points at the chart';
+      if (saveBtn) saveBtn.click();
+      await tick(600);
+
+      check('closing the editor requests the capture', captureCalls.length === 1,
+        captureCalls.length + ' call(s)');
+      /* THE assertion. The editor appearing in the shot was a race:
+       * withChromeHidden() collects the popover to hide it and only then waits
+       * for frames, so a capture begun before the editor existed never hid it. */
+      check('and the editor was already gone when it fired',
+        captureCalls[0] === false, JSON.stringify(captureCalls));
+
+      const after = (await AT.session.annotationsForPage())
+        .find((a) => a.type === 'arrow');
+      check('the arrow ends up with a screenshot', !!after.shotId, after.shotId);
+      /* The other half of the same bug: capturing at draw time also meant
+       * capturing before anything was typed, so the record carried no text. */
+      check('and the text typed into the editor was saved with it',
+        after.text === 'points at the chart', JSON.stringify(after.text));
+
+      AT.overlay.autoCapture = realAutoCapture;
+    }
+  }
+
+  /* --- region highlight over an image ----------------------------------- */
+  {
+    const before = (await AT.session.counts()).annotations;
+    AT.overlay.armTool('highlight');
+    const pic = document.getElementById('pic');
+    const r = pic.getBoundingClientRect();
+    const opts = { bubbles: true, cancelable: true, composed: true };
+
+    window.getSelection().removeAllRanges(); // dragging an image selects nothing
+    pic.dispatchEvent(new MouseEvent('mousedown', Object.assign({}, opts,
+      { clientX: r.left + 5, clientY: r.top + 5 })));
+    document.dispatchEvent(new MouseEvent('mousemove', Object.assign({}, opts,
+      { clientX: r.left + 90, clientY: r.top + 60 })));
+    await tick(20);
+    check('a rubber-band box appears while dragging over an image',
+      AT.overlay.layer.querySelectorAll('.region').length >= 1);
+    document.dispatchEvent(new MouseEvent('mouseup', Object.assign({}, opts,
+      { clientX: r.left + 90, clientY: r.top + 60 })));
+    await tick(60);
+
+    check('dragging over an image created an annotation',
+      (await AT.session.counts()).annotations === before + 1);
+
+    const anns = await AT.session.annotationsForPage();
+    const region = anns.find(a => a.anchor && a.anchor.kind === 'region');
+    check('region highlight was stored with a region anchor', !!region);
+    // Our own region box now covers this point, so this doubles as a check
+    // that hit-testing looks PAST the overlay rather than reporting our host.
+    check('hit-testing sees the page through our own overlay',
+      (AT.anchor.elementUnder(r.left + 42, r.top + 27) || {}).id === 'pic',
+      (AT.anchor.elementUnder(r.left + 42, r.top + 27) || {}).tagName || 'null');
+
+    check('region records the image it covers',
+      region && region.text === 'Image: Sales chart',
+      region ? JSON.stringify(region.text) : 'none');
+    check('region stored its size',
+      region && region.anchor.size.w > 50 && region.anchor.size.h > 30,
+      region ? JSON.stringify(region.anchor.size) : 'none');
+
+    const box = AT.overlay.layer.querySelector('.region[data-at-id]');
+    check('region box was drawn on the page', !!box);
+    check('region box is translucent, not opaque',
+      box && /rgba\([\d\s,]+0\.\d+\)/.test(box.style.background), box ? box.style.background : '');
+
+    // Region highlights must survive a reload like everything else.
+    AT.overlay.layer.replaceChildren();
+    await AT.overlay.restoreAll();
+    await tick(60);
+    check('region highlight is restored after a reload',
+      AT.overlay.layer.querySelectorAll('.region[data-at-id]').length === 1);
+  }
+
+  /* --- ending a session cleans the page ---------------------------------- */
+  check('highlight wraps exist before the session ends',
+    document.querySelectorAll('at-hl').length >= 0); // may be 0 if para was removed
+  await AT.session.end();
+  await AT.overlay.setActive(false);
+  await tick();
+  check('toolbar hidden after the session ends',
+    AT.overlay.shadow.querySelector('.bar').hidden === true);
+
+  /* --- an orphaned content script -----------------------------------------
+   *
+   * Reloading the extension leaves the content scripts in already-open tabs
+   * running, detached from an extension that no longer exists. Their next
+   * storage call rejects with "Extension context invalidated" - an uncaught
+   * promise rejection in the console of a page somebody is still looking at.
+   *
+   * Nothing can revive that script. What it must do is fail QUIETLY.
+   *
+   * Simulated the way Chrome actually signals it: chrome.runtime.id goes away. */
+  {
+    const realId = chrome.runtime.id;
+    delete chrome.runtime.id;
+    check('a dead extension context is detected', AT.store.alive() === false);
+
+    let threw = false;
+    let result = 'not-run';
+    try {
+      result = await AT.store.getSession();
+    } catch (_) {
+      threw = true;
+    }
+    check('reading the session from a dead context does not throw', threw === false);
+    /* "No session" is the truthful answer: this script can no longer see one.
+     * Returning null lets every caller take its existing empty-session path
+     * instead of needing to know about invalidation at all. */
+    check('and reports no session rather than an error', result === null,
+      JSON.stringify(result));
+
+    let writeThrew = false;
+    try {
+      await AT.store.setSession({ id: 'x' });
+      await AT.store.putShot('x', 'data:,');
+    } catch (_) {
+      writeThrew = true;
+    }
+    check('writes from a dead context are silently dropped', writeThrew === false);
+
+    chrome.runtime.id = realId;
+    check('and a live context still works normally', AT.store.alive() === true);
+    /* The guard must not swallow REAL storage failures - that would turn a
+     * genuine bug into silence and cost hours to find. */
+    const realGet = chrome.storage.local.get;
+    chrome.storage.local.get = async () => { throw new Error('disk on fire'); };
+    let realErrorReached = false;
+    try {
+      await AT.store.getSession();
+    } catch (e) {
+      realErrorReached = /disk on fire/.test(e.message);
+    }
+    chrome.storage.local.get = realGet;
+    check('a storage failure that is NOT invalidation still reaches the caller',
+      realErrorReached);
+  }
+
+  } catch (e) {
+    lines.push('FAIL threw after ' + lines.length + ' checks :: ' +
+               (e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e));
+  }
+  flush();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,296 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Annotate Tool - keys, arrow labels</title></head>
+<body>
+
+<div id="page">
+  <h2 id="h">A page that steals single letters</h2>
+  <p id="para">Some ordinary text to point an arrow at.</p>
+</div>
+
+<div id="checks">pending</div>
+
+<script>
+  window.__errors = [];
+  window.onerror = function (m, s, l, c) {
+    window.__errors.push(m + ' @' + (s || '?').split('/').pop() + ':' + l + ':' + c);
+  };
+
+  /* Stands in for a site with single-letter keyboard shortcuts. This is the
+   * exact pattern that broke the "n" key: the guard checks e.target.tagName,
+   * but a closed shadow root retargets the event to our host DIV, so the guard
+   * never fires and the page swallows the keystroke. */
+  window.__pageSawKeys = [];
+  document.addEventListener('keydown', function (e) {
+    if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) {
+      return; // the guard every site writes - and which shadow DOM defeats
+    }
+    window.__pageSawKeys.push(e.key);
+    if (e.key === 'n') e.preventDefault(); // "new item" - eats the letter
+  });
+
+  const mem = {};
+  window.chrome = {
+    storage: {
+      local: {
+        async get(k) {
+          if (k === null) return JSON.parse(JSON.stringify(mem));
+          if (typeof k === 'string') return k in mem ? { [k]: JSON.parse(JSON.stringify(mem[k])) } : {};
+          return {};
+        },
+        async set(o) { for (const key of Object.keys(o)) mem[key] = JSON.parse(JSON.stringify(o[key])); },
+        async remove(keys) { (Array.isArray(keys) ? keys : [keys]).forEach(k => delete mem[k]); },
+        async getBytesInUse() { return 0; }
+      },
+      onChanged: { addListener() {} }
+    },
+    runtime: {
+      id: 'test',
+      async sendMessage(msg) {
+        if (msg.type === 'AT_CAPTURE') {
+          return { ok: true, dataUrl:
+            'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ' +
+            'AAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' };
+        }
+        return { ok: true };
+      },
+      onMessage: { addListener() {} }
+    }
+  };
+</script>
+
+<script src="../core/store.js"></script>
+<script src="../core/anchor.js"></script>
+<script src="../core/session.js"></script>
+<script src="../core/box-tool.js"></script>
+<script src="../tools/highlight.js"></script>
+<script src="../tools/note.js"></script>
+<script src="../tools/box.js"></script>
+<script src="../tools/arrow.js"></script>
+<script src="../content/overlay.js"></script>
+
+<script>
+(async function () {
+  const lines = [];
+  function flush() { document.getElementById('checks').textContent = lines.join('\n'); }
+  function check(label, ok, detail) {
+    lines.push((ok ? 'PASS ' : 'FAIL ') + label + (detail ? ' :: ' + detail : ''));
+    flush();
+  }
+  const tick = (ms) => new Promise(r => setTimeout(r, ms || 40));
+
+  try {
+    await tick(80);
+    check('no load-time errors', window.__errors.length === 0, window.__errors.join(' | '));
+
+    await AT.session.start('Mark');
+    await AT.overlay.setActive(true);
+    await tick();
+
+    /* --- 1. keystrokes must not leak out of our editor ------------------ */
+    {
+      // Place a note, which opens the editor.
+      AT.overlay.armTool('note');
+      const r = document.getElementById('para').getBoundingClientRect();
+      document.getElementById('para').dispatchEvent(new MouseEvent('click', {
+        bubbles: true, cancelable: true, clientX: r.left + 10, clientY: r.top + 5 }));
+      await tick(80);
+
+      const ta = AT.overlay.shadow.querySelector('.pop textarea');
+      check('note editor is open', !!ta);
+
+      window.__pageSawKeys = [];
+
+      // Type an "n" the way a browser would: the event originates at the
+      // textarea inside the closed shadow root.
+      ta.focus();
+      ta.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'n', bubbles: true, composed: true, cancelable: true }));
+      await tick(30);
+
+      // THE regression: before the fix the page's document listener saw this
+      // and called preventDefault(), so the letter never reached the note.
+      check('the page does NOT see keys typed into our editor',
+        window.__pageSawKeys.length === 0,
+        'page saw: ' + JSON.stringify(window.__pageSawKeys));
+
+      // And an ordinary page keystroke still reaches the page normally.
+      document.getElementById('h').dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'n', bubbles: true, composed: true, cancelable: true }));
+      await tick(30);
+      check('keys typed on the PAGE still reach the page',
+        window.__pageSawKeys.indexOf('n') > -1,
+        JSON.stringify(window.__pageSawKeys));
+
+      // Escape closes the editor rather than only disarming the tool.
+      window.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape', bubbles: true, cancelable: true }));
+      await tick(40);
+      check('Escape closes the open editor',
+        !AT.overlay.shadow.querySelector('.pop'));
+    }
+
+    /* --- 2. an arrow carrying a note says so ---------------------------- */
+    {
+      AT.overlay.armTool('arrow');
+      const h = document.getElementById('h').getBoundingClientRect();
+      const p = document.getElementById('para').getBoundingClientRect();
+      document.getElementById('h').dispatchEvent(new MouseEvent('click', {
+        bubbles: true, cancelable: true, clientX: h.left + 5, clientY: h.top + 5 }));
+      await tick(40);
+      document.getElementById('para').dispatchEvent(new MouseEvent('click', {
+        bubbles: true, cancelable: true, clientX: p.left + 30, clientY: p.top + 5 }));
+      await tick(120);
+
+      check('an arrow with no note shows no label',
+        AT.overlay.layer.querySelectorAll('.arrow-label').length === 0);
+
+      // Creating an arrow now opens its editor straight away.
+      const ta = AT.overlay.shadow.querySelector('.pop textarea');
+      check('drawing an arrow opens its editor', !!ta);
+
+      if (ta) {
+        ta.value = 'This points at the wrong heading';
+        const save = Array.from(AT.overlay.shadow.querySelectorAll('.pop .btn'))
+          .find(b => b.textContent === 'Save');
+        save.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
+        save.click();
+        await tick(90);
+
+        const label = AT.overlay.layer.querySelector('.arrow-label');
+        check('saving a note makes the arrow show a label', !!label);
+        check('the label shows the note text',
+          label && label.textContent.indexOf('This points at the wrong heading') > -1,
+          label ? JSON.stringify(label.textContent) : 'none');
+        check('the full text is available on hover',
+          label && label.title === 'This points at the wrong heading');
+        check('the label is tinted to match its arrow',
+          label && label.style.getPropertyValue('--at-ring') === AT.overlay.color,
+          label ? label.style.getPropertyValue('--at-ring') : 'none');
+      }
+
+      // And it survives a reload like everything else.
+      AT.overlay.layer.replaceChildren();
+      AT.overlay.svg.replaceChildren();
+      await AT.overlay.restoreAll();
+      await tick(90);
+      check('the arrow label comes back after a reload',
+        AT.overlay.layer.querySelectorAll('.arrow-label').length === 1);
+    }
+
+    /* --- 3. the box tool ------------------------------------------------ */
+    {
+      const before = (await AT.session.counts()).annotations;
+      AT.overlay.armTool('box');
+      const p = document.getElementById('para').getBoundingClientRect();
+      const opts = { bubbles: true, cancelable: true, composed: true };
+
+      document.getElementById('para').dispatchEvent(new MouseEvent('mousedown',
+        Object.assign({}, opts, { clientX: p.left + 5, clientY: p.top + 2 })));
+      document.dispatchEvent(new MouseEvent('mousemove',
+        Object.assign({}, opts, { clientX: p.left + 120, clientY: p.top + 40 })));
+      await tick(30);
+      check('a rubber-band box appears while dragging',
+        AT.overlay.layer.querySelectorAll('.abox').length >= 1);
+
+      document.dispatchEvent(new MouseEvent('mouseup',
+        Object.assign({}, opts, { clientX: p.left + 120, clientY: p.top + 40 })));
+      await tick(90);
+
+      check('dragging created one box annotation',
+        (await AT.session.counts()).annotations === before + 1);
+
+      const anns = await AT.session.annotationsForPage();
+      const boxAnn = anns.find(a => a.type === 'box');
+      check('the annotation is typed as a box', !!boxAnn);
+      check('the box stored its size',
+        boxAnn && boxAnn.anchor.size.w > 100 && boxAnn.anchor.size.h > 30,
+        boxAnn ? JSON.stringify(boxAnn.anchor.size) : 'none');
+
+      const node = AT.overlay.layer.querySelector('.abox[data-at-id]');
+      check('the box was drawn on the page', !!node);
+
+      /* The two things that DEFINE this tool visually. A box that fills in
+       * permanently would sit between the reviewer and the content it frames,
+       * which is the whole reason it is outline-only. */
+      if (node) {
+        const style = getComputedStyle(node);
+        check('the outline is solid and takes the current colour',
+          style.borderStyle === 'solid' &&
+          style.getPropertyValue('--at-line').trim() === AT.overlay.color,
+          style.borderStyle + ' / ' + style.getPropertyValue('--at-line'));
+        check('the corners are rounded', parseFloat(style.borderRadius) > 0,
+          style.borderRadius);
+        // Transparent resolves to rgba(0,0,0,0) - anything else means the box
+        // is filled when it should not be.
+        check('the fill is transparent when not hovered',
+          /rgba\(0,\s*0,\s*0,\s*0\)|transparent/.test(style.backgroundColor),
+          style.backgroundColor);
+
+        /* :hover cannot be triggered headlessly, so the hover WASH is checked
+         * by resolving the same color-mix the stylesheet uses. This proves two
+         * things at once: that color-mix is supported here, and that the fill
+         * really is 10% of the box's own colour rather than some other alpha. */
+        const probe = document.createElement('div');
+        probe.style.background =
+          'color-mix(in srgb, ' + AT.overlay.color + ' 10%, transparent)';
+        document.body.appendChild(probe);
+        const wash = getComputedStyle(probe).backgroundColor;
+        probe.remove();
+
+        /* Chrome may report this as rgba(244, 196, 48, 0.1) OR as
+         * color(srgb 0.956863 0.768627 0.188235 / 0.1) - the same colour in
+         * 0-255 ints or 0-1 floats. Normalise to bytes so the assertion does
+         * not depend on which spelling the engine chose. */
+        const nums = (wash.match(/[\d.]+/g) || []).map(Number);
+        const isFloatForm = wash.indexOf('color(') === 0;
+        const toByte = (n) => Math.round(isFloatForm ? n * 255 : n);
+        const alpha = nums.length === 4 ? nums[3] : null;
+
+        check('the hover fill resolves to 10% of the box colour',
+          alpha !== null && Math.abs(alpha - 0.1) < 0.01, wash);
+        check('the hover fill keeps the box colour, not a grey',
+          nums.length === 4 &&
+          toByte(nums[0]) === 244 && toByte(nums[1]) === 196 && toByte(nums[2]) === 48,
+          wash + ' -> rgb(' + nums.slice(0, 3).map(toByte).join(',') + ')');
+      }
+
+      // Creating a box opens its editor, same as notes and arrows.
+      const ta = AT.overlay.shadow.querySelector('.pop textarea');
+      check('drawing a box opens its editor', !!ta);
+      if (ta) {
+        ta.value = 'Terms table disagrees with the pricing page';
+        const save = Array.from(AT.overlay.shadow.querySelectorAll('.pop .btn'))
+          .find(b => b.textContent === 'Save');
+        save.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
+        save.click();
+        await tick(90);
+        check('the box carries its note on hover',
+          node.title === 'Terms table disagrees with the pricing page', node.title);
+      }
+
+      // And it restores like everything else.
+      AT.overlay.layer.replaceChildren();
+      AT.overlay.svg.replaceChildren();
+      await AT.overlay.restoreAll();
+      await tick(90);
+      check('the box comes back after a reload',
+        AT.overlay.layer.querySelectorAll('.abox[data-at-id]').length === 1);
+    }
+
+    /* --- 4. teardown removes the label too ------------------------------ */
+    {
+      await AT.overlay.setActive(false);
+      await tick(60);
+      check('ending the session removes arrow labels',
+        AT.overlay.layer.querySelectorAll('.arrow-label').length === 0);
+    }
+  } catch (e) {
+    lines.push('FAIL threw after ' + lines.length + ' checks :: ' +
+      (e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e));
+  }
+  flush();
+})();
+</script>
+</body>
+</html>

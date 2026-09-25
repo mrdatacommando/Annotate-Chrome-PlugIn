@@ -1,0 +1,220 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Annotate Tool - anchor + highlight</title></head>
+<body>
+
+<!-- A page with the shapes that actually break naive anchoring: a phrase that
+     repeats, inline elements splitting a sentence, and nested structure. -->
+<div id="page">
+  <section id="s1">
+    <p id="p1">The pricing plan is Free forever for up to five seats.</p>
+    <p id="p2">Click <b>Submit</b> to continue.</p>
+    <p id="p3">Then click <b>Submit</b> again on the review step.</p>
+    <p id="p4">Finally <b>Submit</b> the form for approval.</p>
+    <p id="p5">A sentence with <em>emphasis</em> in the middle of it.</p>
+  </section>
+</div>
+
+<div id="checks">pending</div>
+
+<script>
+  window.__errors = [];
+  window.onerror = function (m, s, l, c) {
+    window.__errors.push(m + ' @' + (s || '?').split('/').pop() + ':' + l + ':' + c);
+  };
+  const mem = {};
+  window.chrome = {
+    storage: {
+      local: {
+        async get(k) {
+          if (k === null) return Object.assign({}, mem);
+          if (typeof k === 'string') return k in mem ? { [k]: mem[k] } : {};
+          return {};
+        },
+        async set(o) { Object.assign(mem, o); },
+        async remove(keys) { (Array.isArray(keys) ? keys : [keys]).forEach(k => delete mem[k]); },
+        async getBytesInUse() { return 0; }
+      },
+      onChanged: { addListener() {} }
+    },
+    runtime: { sendMessage: async () => ({}), onMessage: { addListener() {} }, id: 't' }
+  };
+</script>
+
+<script src="../core/store.js"></script>
+<script src="../core/anchor.js"></script>
+<script src="../core/session.js"></script>
+<script src="../core/box-tool.js"></script>
+<script src="../tools/highlight.js"></script>
+<script src="../tools/note.js"></script>
+<script src="../tools/box.js"></script>
+<script src="../tools/arrow.js"></script>
+
+<script>
+(function () {
+  const lines = [];
+  function check(label, ok, detail) {
+    lines.push((ok ? 'PASS ' : 'FAIL ') + label + (detail ? ' :: ' + detail : ''));
+  }
+
+  const ORIGINAL_HTML = document.getElementById('page').innerHTML;
+
+  // Builds a Range over the Nth occurrence of `needle` inside element `id`.
+  function rangeIn(id, needle, occurrence) {
+    const host = document.getElementById(id);
+    const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT, null);
+    let seen = 0, n;
+    while ((n = walker.nextNode())) {
+      let from = 0, at;
+      while ((at = n.nodeValue.indexOf(needle, from)) >= 0) {
+        seen++;
+        if (seen === (occurrence || 1)) {
+          const r = document.createRange();
+          r.setStart(n, at);
+          r.setEnd(n, at + needle.length);
+          return r;
+        }
+        from = at + 1;
+      }
+    }
+    return null;
+  }
+
+  check('no load-time errors', window.__errors.length === 0, window.__errors.join(' | '));
+  check('all three tools registered',
+    !!(AT.tools.highlight && AT.tools.note && AT.tools.arrow),
+    Object.keys(AT.tools || {}).join(','));
+
+  /* --- 1. simple anchor round-trip ---------------------------------- */
+  {
+    const r = rangeIn('p1', 'Free forever');
+    const anchor = AT.anchor.serializeRange(r);
+    check('quote captures surrounding context',
+      anchor.quote.prefix.length > 0 && anchor.quote.suffix.length > 0,
+      JSON.stringify(anchor.quote));
+    const back = AT.anchor.resolveRange(anchor);
+    check('round-trips to the same text', back && back.toString() === 'Free forever',
+      back ? back.toString() : 'null');
+  }
+
+  /* --- 2. repeated phrase must resolve to the RIGHT occurrence ------- */
+  {
+    // "Submit" appears in p2, p3 and p4. Anchor the one in p3.
+    const r = rangeIn('p3', 'Submit');
+    const anchor = AT.anchor.serializeRange(r);
+    const back = AT.anchor.resolveRange(anchor);
+    const landedIn = back
+      ? (back.startContainer.parentElement.closest('p') || {}).id
+      : null;
+    check('repeated phrase resolves to the correct occurrence (p3)',
+      landedIn === 'p3', 'landed in ' + landedIn);
+  }
+
+  /* --- 3. the OTHER repeated occurrences resolve correctly too ------- */
+  {
+    const r2 = AT.anchor.resolveRange(AT.anchor.serializeRange(rangeIn('p2', 'Submit')));
+    const r4 = AT.anchor.resolveRange(AT.anchor.serializeRange(rangeIn('p4', 'Submit')));
+    const in2 = r2 ? (r2.startContainer.parentElement.closest('p') || {}).id : null;
+    const in4 = r4 ? (r4.startContainer.parentElement.closest('p') || {}).id : null;
+    check('first and third occurrences also resolve correctly',
+      in2 === 'p2' && in4 === 'p4', 'p2->' + in2 + ', p4->' + in4);
+  }
+
+  /* --- 4. wrap / unwrap is lossless --------------------------------- */
+  {
+    const r = rangeIn('p1', 'Free forever');
+    const ann = { id: 'test1', color: '#f4c430', comment: '' };
+    const wraps = AT.tools.highlight._wrap(r, ann);
+    // A single-text-node selection must produce exactly ONE wrap. More than
+    // one means the boundary filter let a leftover split fragment through.
+    check('single-node selection wraps exactly one node', wraps.length === 1,
+      'count=' + wraps.length);
+    // The decisive assertion: what got highlighted must equal what was
+    // selected, no more. Counting nodes alone would miss over-wrapping.
+    check('wrapped text equals the selection exactly',
+      wraps.map(w => w.textContent).join('') === 'Free forever',
+      JSON.stringify(wraps.map(w => w.textContent).join('')));
+    check('surrounding page text is unchanged',
+      document.getElementById('p1').textContent ===
+        'The pricing plan is Free forever for up to five seats.');
+
+    AT.tools.highlight._unwrap('test1');
+    check('unwrap restores the exact original markup',
+      document.getElementById('page').innerHTML === ORIGINAL_HTML);
+  }
+
+  /* --- 5. a highlight spanning an inline element -------------------- */
+  {
+    const p5 = document.getElementById('p5');
+    const first = p5.firstChild;                 // "A sentence with "
+    const last = p5.lastChild;                   // " in the middle of it."
+    const r = document.createRange();
+    r.setStart(first, first.nodeValue.indexOf('sentence'));
+    r.setEnd(last, last.nodeValue.indexOf('middle') + 'middle'.length);
+
+    const ann = { id: 'test2', color: '#4aa3f0', comment: '' };
+    const selected = r.toString();
+    const wraps = AT.tools.highlight._wrap(r, ann);
+    // Three fragments expected: text before the <em>, the <em> itself, and the
+    // text after it. A fourth would be a leftover split fragment.
+    check('cross-element selection wraps exactly three nodes', wraps.length === 3,
+      'wraps=' + wraps.length + ' parents=' + wraps.map(w => w.parentElement.tagName).join(','));
+    check('cross-element wrapped text equals the selection exactly',
+      wraps.map(w => w.textContent).join('') === selected,
+      JSON.stringify(wraps.map(w => w.textContent).join('')) + ' vs ' + JSON.stringify(selected));
+    check('cross-element highlight covers the emphasis',
+      wraps.some(w => w.parentElement && w.parentElement.tagName === 'EM'),
+      wraps.map(w => w.parentElement.tagName).join(','));
+
+    AT.tools.highlight._unwrap('test2');
+    check('cross-element unwrap is lossless',
+      document.getElementById('page').innerHTML === ORIGINAL_HTML);
+  }
+
+  /* --- 6. point anchors --------------------------------------------- */
+  {
+    const p2 = document.getElementById('p2');
+    const rect = p2.getBoundingClientRect();
+    const anchor = AT.anchor.serializePoint(rect.left + 5, rect.top + 3);
+    const pos = AT.anchor.resolvePoint(anchor);
+    check('point anchor resolves exactly', !!(pos && pos.exact), JSON.stringify(pos));
+
+    const expectedX = rect.left + window.scrollX + 5;
+    check('point anchor lands within a pixel of where it was placed',
+      pos && Math.abs(pos.x - expectedX) <= 1,
+      'got ' + (pos && pos.x.toFixed(1)) + ' expected ' + expectedX.toFixed(1));
+
+    const dead = AT.anchor.resolvePoint({ selector: '#gone-forever', page: { x: 42, y: 99 } });
+    check('missing element falls back to page coords and flags inexact',
+      dead && dead.x === 42 && dead.exact === false, JSON.stringify(dead));
+  }
+
+  /* --- 7. css paths -------------------------------------------------- */
+  {
+    const path = AT.anchor.cssPath(document.getElementById('p5'));
+    check('cssPath resolves back to the same element',
+      AT.anchor.resolvePath(path) === document.getElementById('p5'), path);
+
+    const em = document.querySelector('#p5 em');
+    const emPath = AT.anchor.cssPath(em);
+    check('cssPath works for a nested element without an id',
+      AT.anchor.resolvePath(emPath) === em, emPath);
+
+    check('a syntactically broken stored path returns null, not a throw',
+      AT.anchor.resolvePath('###nonsense[[') === null);
+  }
+
+  /* --- 8. a quote that no longer exists ----------------------------- */
+  {
+    const gone = AT.anchor.resolveRange({
+      selector: '#p1',
+      quote: { prefix: '', exact: 'text that was never on this page', suffix: '' }
+    });
+    check('vanished text resolves to null (caller marks it unplaced)', gone === null);
+  }
+
+  document.getElementById('checks').textContent = lines.join('\n');
+})();
+</script>
+</body>
+</html>

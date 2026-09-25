@@ -1,0 +1,157 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Annotate Tool - unzip</title></head>
+<body>
+<div id="checks">pending</div>
+
+<script src="../core/zip.js"></script>
+<script src="../core/unzip.js"></script>
+
+<script>
+(async function () {
+  const lines = [];
+  function check(label, ok, detail) {
+    lines.push((ok ? 'PASS ' : 'FAIL ') + label + (detail ? ' :: ' + detail : ''));
+  }
+  function flush() { document.getElementById('checks').textContent = lines.join('\n'); }
+
+  const enc = new TextEncoder();
+  function same(a, b) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  }
+
+  try {
+    /* --- 1. round-trip through our own writer ------------------------- */
+    {
+      const png = AT.zip.dataUrlToBytes(
+        'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ' +
+        'AAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==');
+
+      const files = [
+        { name: 'bundle/report.json', data: JSON.stringify({ hello: 'world', n: 42 }) },
+        { name: 'bundle/report.md', data: '# Heading\n\nSome — text with café.' },
+        { name: 'bundle/screenshots/001-shot.png', data: png }
+      ];
+
+      const blob = AT.zip.create(files);
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      const read = await AT.unzip.read(bytes);
+
+      check('round-trip returns every entry', read.size === 3,
+        Array.from(read.keys()).join(', '));
+      check('paths survive intact', read.has('bundle/screenshots/001-shot.png'));
+
+      const json = read.get('bundle/report.json');
+      check('text entry decodes back to the same string',
+        AT.unzip.text(json) === files[0].data);
+      check('parsed JSON matches', JSON.parse(AT.unzip.text(json)).n === 42);
+
+      const md = read.get('bundle/report.md');
+      check('non-ASCII survives the round-trip',
+        AT.unzip.text(md) === files[1].data,
+        JSON.stringify(AT.unzip.text(md).slice(0, 40)));
+
+      const shot = read.get('bundle/screenshots/001-shot.png');
+      check('binary entry is byte-identical', same(shot.bytes, png),
+        shot.bytes.length + ' vs ' + png.length);
+      check('CRC verifies on every entry',
+        AT.unzip.verify(json) && AT.unzip.verify(md) && AT.unzip.verify(shot));
+      check('entries are STORE, as our writer emits',
+        shot.method === AT.unzip.METHOD_STORE);
+
+      const url = AT.unzip.dataUrl(shot);
+      check('dataUrl() produces a usable PNG source',
+        url.indexOf('data:image/png;base64,iVBORw0KGgo') === 0);
+    }
+
+    /* --- 2. a REAL archive written by Windows (DEFLATE) ---------------- */
+    /* This is the case our own writer never produces and the one most likely
+     * to arrive from a colleague: a bundle re-zipped on its way through email
+     * or a file share. Compress-Archive made this file. */
+    {
+      let bytes = null;
+      try {
+        const res = await fetch('../../annotate-tool-release/annotate-tool.zip');
+        if (res.ok) bytes = new Uint8Array(await res.arrayBuffer());
+      } catch (e) { /* reported below */ }
+
+      if (!bytes) {
+        check('real Windows ZIP is readable', false, 'could not load release zip');
+      } else {
+        const read = await AT.unzip.read(bytes);
+        check('reads a Windows-authored archive', read.size > 10, read.size + ' entries');
+
+        const deflated = Array.from(read.values())
+          .filter((e) => e.method === AT.unzip.METHOD_DEFLATE);
+        check('archive really is DEFLATE, so inflate was exercised',
+          deflated.length > 0, deflated.length + ' deflated entries');
+
+        const manifest = Array.from(read.keys()).find((k) => k.endsWith('manifest.json'));
+        check('found manifest.json inside', !!manifest, manifest || 'missing');
+        // Compress-Archive writes backslashes, against the spec. If any leak
+        // through, every path lookup in the review page misses.
+        check('Windows backslash separators are normalised to "/"',
+          !Array.from(read.keys()).some((k) => k.indexOf('\\') > -1),
+          Array.from(read.keys()).slice(0, 2).join(' | '));
+
+        if (manifest) {
+          const parsed = JSON.parse(AT.unzip.text(read.get(manifest)));
+          check('inflated JSON parses and is correct',
+            parsed.name === 'Annotate Tool' && !!parsed.version,
+            parsed.name + ' v' + parsed.version);
+          check('inflated entry passes its CRC', AT.unzip.verify(read.get(manifest)));
+        }
+
+        // Every entry must inflate to exactly the size the archive claims.
+        const wrongSize = Array.from(read.values())
+          .filter((e) => e.bytes.length !== e.size);
+        check('every inflated entry matches its recorded size',
+          wrongSize.length === 0,
+          wrongSize.map((e) => e.name).join(', ') || 'all match');
+
+        const allCrc = Array.from(read.values()).every((e) => AT.unzip.verify(e));
+        check('every entry in the real archive passes CRC', allCrc);
+      }
+    }
+
+    /* --- 3. bad input fails clearly, not silently ---------------------- */
+    {
+      async function throwsWith(bytes, expect, label) {
+        try {
+          await AT.unzip.read(bytes);
+          check(label, false, 'no error thrown');
+        } catch (e) {
+          check(label, e.message.indexOf(expect) > -1, e.message);
+        }
+      }
+      await throwsWith(new Uint8Array(4), 'too small', 'a truncated file is rejected');
+      await throwsWith(enc.encode('this is definitely not a zip file at all, not even close'),
+        'no end-of-central-directory', 'a non-ZIP is rejected with a clear reason');
+
+      // A valid archive with its central directory scribbled over.
+      const good = new Uint8Array(await AT.zip.create(
+        [{ name: 'a.txt', data: 'hello' }]).arrayBuffer());
+      const broken = good.slice();
+      const eocdAt = broken.length - 22;
+      const cdOffset = new DataView(broken.buffer).getUint32(eocdAt + 16, true);
+      broken[cdOffset] = 0x00; // destroy the central directory signature
+      await throwsWith(broken, 'corrupt ZIP', 'a damaged central directory is rejected');
+    }
+
+    /* --- 4. an empty archive is valid, not an error -------------------- */
+    {
+      const empty = new Uint8Array(await AT.zip.create([]).arrayBuffer());
+      const read = await AT.unzip.read(empty);
+      check('an empty archive reads as zero entries', read.size === 0);
+    }
+  } catch (e) {
+    lines.push('FAIL threw after ' + lines.length + ' checks :: ' +
+      (e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e));
+  }
+  flush();
+})();
+</script>
+</body>
+</html>

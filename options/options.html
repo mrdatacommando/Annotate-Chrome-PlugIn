@@ -1,0 +1,89 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Annotate Tool — settings</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9; --card: #fff; --ink: #16191f; --muted: #5c6470;
+    --line: #e2e5ea; --accent: #2f6f4f; --blue: #2f6ff0;
+    --warn: #a8560f; --warnbg: #fdf1e3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171d; --card: #1c2029; --ink: #eef1f5; --muted: #98a1b0;
+      --line: #2a2f3a; --accent: #3a8a62; --blue: #5b8df6;
+      --warn: #ffb37a; --warnbg: #33240f;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px 20px 60px;
+    background: var(--bg); color: var(--ink);
+    font: 14px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 640px; margin: 0 auto; }
+  h1 { margin: 0 0 4px; font-size: 21px; }
+  .sub { margin: 0 0 24px; color: var(--muted); }
+
+  .card {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 12px; padding: 18px; margin-bottom: 16px;
+  }
+  .card h2 { margin: 0 0 4px; font-size: 15px; }
+  .card p { margin: 0 0 14px; color: var(--muted); font-size: 13px; }
+
+  .folder {
+    display: flex; align-items: center; gap: 10px;
+    padding: 11px 13px; border-radius: 9px;
+    background: var(--bg); border: 1px solid var(--line);
+    margin-bottom: 12px;
+  }
+  .folder .icon { font-size: 17px; }
+  .folder .name { font-weight: 600; }
+  .folder .state { color: var(--muted); font-size: 12.5px; }
+  .folder.warn { background: var(--warnbg); border-color: transparent; }
+  .folder.warn .state { color: var(--warn); }
+  .folder .spacer { flex: 1; }
+
+  button {
+    padding: 9px 15px; border: 0; border-radius: 9px;
+    font: inherit; font-weight: 600; cursor: pointer;
+    background: var(--line); color: var(--ink);
+  }
+  button:hover { filter: brightness(1.06); }
+  button.go { background: var(--accent); color: #fff; }
+  button.blue { background: var(--blue); color: #fff; }
+  button.quiet { background: transparent; font-weight: 500; color: var(--muted); }
+  button:disabled { opacity: .45; cursor: default; }
+
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .note { margin-top: 12px; font-size: 12.5px; color: var(--muted); }
+  .note strong { color: var(--ink); }
+  .msg { margin-top: 12px; font-size: 13px; }
+  .msg.bad { color: var(--warn); }
+  .msg.good { color: var(--accent); }
+  ul { margin: 8px 0 0; padding-left: 18px; color: var(--muted); font-size: 12.5px; }
+  li { margin-bottom: 4px; }
+  input[type=text] {
+    width: 100%; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--bg);
+    color: inherit; font: inherit;
+  }
+  label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 5px; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Annotate Tool</h1>
+    <p class="sub">Settings</p>
+    <div id="app">Loading…</div>
+  </div>
+
+  <script src="../core/store.js"></script>
+  <script src="../core/folder.js"></script>
+  <script src="../core/live.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

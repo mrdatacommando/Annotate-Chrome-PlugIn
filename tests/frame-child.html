@@ -1,0 +1,109 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>frame child</title></head>
+<body>
+<p id="content">Text living inside an embedded frame.</p>
+<div id="out">pending</div>
+
+<script>
+  // Each frame gets its own window, so the stub has to be defined here too.
+  // sendMessage records what the frame tried to relay, which is how the parent
+  // asserts that a subframe delegates instead of writing storage itself.
+  window.__sent = [];
+  const mem = {};
+  window.chrome = {
+    storage: {
+      local: {
+        async get(k) {
+          if (k === null) return Object.assign({}, mem);
+          if (typeof k === 'string') return k in mem ? { [k]: mem[k] } : {};
+          return {};
+        },
+        async set(o) { Object.assign(mem, o); },
+        async remove(keys) { (Array.isArray(keys) ? keys : [keys]).forEach(k => delete mem[k]); },
+        async getBytesInUse() { return 0; }
+      },
+      onChanged: { addListener() {} }
+    },
+    runtime: {
+      id: 'test',
+      async sendMessage(msg) {
+        window.__sent.push(msg);
+        if (msg.type === 'AT_PAGE_URL') {
+          return { ok: true, url: 'https://example.com/top-page', title: 'Top' };
+        }
+        if (msg.type === 'AT_CAPTURE_VIA_TOP') {
+          // Stands in for the top frame hiding its toolbar and taking the shot.
+          return { ok: true, dataUrl:
+            'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ' +
+            'AAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' };
+        }
+        if (msg.type === 'AT_SESSION_OP') {
+          // Stands in for the top frame executing the mutation.
+          return { ok: true, result: { id: 'relayed_' + msg.op, relayed: true } };
+        }
+        return { ok: true };
+      },
+      onMessage: { addListener() {} }
+    }
+  };
+</script>
+
+<script src="../core/store.js"></script>
+<script src="../core/anchor.js"></script>
+<script src="../core/session.js"></script>
+<script src="../core/box-tool.js"></script>
+<script src="../tools/highlight.js"></script>
+<script src="../tools/note.js"></script>
+<script src="../tools/box.js"></script>
+<script src="../tools/arrow.js"></script>
+<script src="../content/overlay.js"></script>
+
+<script>
+(async function () {
+  await new Promise((r) => setTimeout(r, 60)); // let the overlay mount
+  const result = {};
+  try {
+    result.isTop = AT.session.IS_TOP;
+    result.framePath = AT.session.FRAME_PATH;
+    result.frameKey = AT.session.FRAME_KEY;
+    result.topUrl = await AT.session.topPageUrl();
+
+    // A mutation from a subframe must be relayed, not written locally.
+    const ann = await AT.session.addAnnotation({ type: 'note', text: 'from the frame' });
+    result.addResult = ann;
+    result.sentTypes = window.__sent.map(m => m.type);
+
+    const relayed = window.__sent.find(m => m.type === 'AT_SESSION_OP');
+    result.relayedOp = relayed ? relayed.op : null;
+    // The frame stamp is applied in the ORIGINATING frame, before the relay.
+    result.relayedFrame = relayed && relayed.args && relayed.args[0]
+      ? relayed.args[0].frame : null;
+
+    // Storage must be untouched by the subframe.
+    result.wroteStorageDirectly = !!(await AT.store.getSession());
+
+    /* The capture path from inside a frame. `bar` is null here (no toolbar in
+     * a subframe), which used to throw a TypeError that autoCapture swallowed
+     * - so an annotation made in an iframe silently got no screenshot. */
+    result.captureError = null;
+    try {
+      const pixels = await AT.overlay.withChromeHidden(() => AT.overlay.grabPixels());
+      result.capturedFromFrame = typeof pixels === 'string' &&
+        pixels.indexOf('data:image/png') === 0;
+    } catch (e) {
+      result.capturedFromFrame = false;
+      result.captureError = String(e && e.message ? e.message : e);
+    }
+    // A subframe must delegate the shot, because only the top frame can hide
+    // the toolbar that would otherwise appear in it.
+    result.delegatedCapture = window.__sent.some(m => m.type === 'AT_CAPTURE_VIA_TOP');
+    result.tookShotItself = window.__sent.some(m => m.type === 'AT_CAPTURE');
+  } catch (e) {
+    result.error = String(e && e.message ? e.message : e);
+  }
+  document.getElementById('out').textContent = JSON.stringify(result);
+})();
+</script>
+</body>
+</html>

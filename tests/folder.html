@@ -1,0 +1,174 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Annotate Tool - working folder</title></head>
+<body>
+<div id="checks">pending</div>
+
+<script src="../core/folder.js"></script>
+
+<script>
+(function () {
+  const lines = [];
+  function flush() { document.getElementById('checks').textContent = lines.join('\n'); }
+  function check(label, ok, detail) {
+    lines.push((ok ? 'PASS ' : 'FAIL ') + label + (detail ? ' :: ' + detail : ''));
+    flush();
+  }
+
+  const P = AT.folderPure;
+
+  /* Only the pure half is exercised here. showDirectoryPicker needs a real
+   * user gesture and a real filesystem, so the handle, permission and write
+   * paths join captureVisibleTab and chrome.downloads on the manual list.
+   * What CAN be tested is everything that decides what the user is shown. */
+
+  /* --- file names ------------------------------------------------------- */
+  {
+    check('an ordinary bundle name passes through untouched',
+      P.safeName('annotate-session-2026-09-10-1432.zip') ===
+      'annotate-session-2026-09-10-1432.zip');
+
+    /* getFileHandle() does not create subdirectories - a name with a slash
+     * throws instead, and a clear message beats a DOM exception. */
+    check('a path separator cannot escape the chosen folder',
+      P.safeName('../../etc/passwd.zip').indexOf('/') === -1 &&
+      P.safeName('../../etc/passwd.zip').indexOf('\\') === -1,
+      P.safeName('../../etc/passwd.zip'));
+    check('a Windows separator is handled too',
+      P.safeName('..\\..\\secret.zip').indexOf('\\') === -1,
+      P.safeName('..\\..\\secret.zip'));
+    check('a leading dot cannot make a hidden file',
+      P.safeName('...hidden.zip').indexOf('.') !== 0, P.safeName('...hidden.zip'));
+    check('characters Windows forbids are stripped',
+      P.safeName('re:port<1>|x?.zip') === 'report1x.zip',
+      P.safeName('re:port<1>|x?.zip'));
+    check('an empty name still yields something writable',
+      P.safeName('') === 'bundle.zip' && P.safeName(null) === 'bundle.zip');
+  }
+
+  /* --- what counts as a bundle ------------------------------------------ */
+  {
+    check('a zip is a bundle', P.isBundle('annotate-session-2026-09-10-1432.zip'));
+    check('case does not matter', P.isBundle('BUNDLE.ZIP'));
+    /* A synced Drive folder is full of unrelated files. Listing them all would
+     * turn the review page into a file browser nobody asked for. */
+    check('other files are ignored',
+      !P.isBundle('notes.txt') && !P.isBundle('photo.png') && !P.isBundle('sheet.xlsx'));
+    check('a folder-ish name is ignored', !P.isBundle('archive.zip.part'));
+    check('a missing name does not throw', P.isBundle(undefined) === false);
+  }
+
+  /* --- ordering --------------------------------------------------------- */
+  {
+    /* Bundle names carry a sortable timestamp, so string order IS
+     * chronological order - newest first without parsing dates. */
+    const sorted = P.sortBundles([
+      { name: 'annotate-session-2026-09-08-0900.zip', lastModified: 10 },
+      { name: 'annotate-session-2026-09-10-1432.zip', lastModified: 20 },
+      { name: 'annotate-session-2026-09-09-1100.zip', lastModified: 30 }
+    ]);
+    check('bundles come back newest first',
+      sorted.map(f => f.name.slice(17, 27)).join(' ') ===
+      '2026-09-10 2026-09-09 2026-09-08',
+      sorted.map(f => f.name.slice(17, 27)).join(' '));
+
+    /* A reply round is NEWER than the bundle it answers. A plain string sort
+     * gets this backwards, because "." outranks "-" - so "-1432.zip" would
+     * come out above "-1432-reply-2.zip". The round has to be compared as a
+     * number. */
+    const rounds = P.sortBundles([
+      { name: 'annotate-session-2026-09-10-1432.zip' },
+      { name: 'annotate-session-2026-09-10-1432-reply-2.zip' },
+      { name: 'annotate-session-2026-09-10-1432-reply-1.zip' },
+      { name: 'annotate-session-2026-09-10-1432-reviewed.zip' }
+    ]);
+    check('a conversation reads newest round first',
+      rounds.map(r => (P.bundleKey(r.name).round)).join(',') === '2,1,0.5,0',
+      rounds.map(r => r.name.replace('annotate-session-2026-09-10-1432', '…')).join(' | '));
+
+    check('a reviewed pass sits between the original and a numbered reply',
+      P.bundleKey('annotate-session-2026-09-10-1432-reviewed.zip').round === 0.5 &&
+      P.bundleKey('annotate-session-2026-09-10-1432.zip').round === 0);
+
+    check('a name that is not one of ours has no key',
+      P.bundleKey('holiday-photos.zip') === null);
+
+    // A newer session still beats an older session's latest reply round.
+    const across = P.sortBundles([
+      { name: 'annotate-session-2026-09-08-0900-reply-5.zip' },
+      { name: 'annotate-session-2026-09-10-1432.zip' }
+    ]);
+    check('a newer session outranks an older conversation',
+      across[0].name.indexOf('2026-09-10') > -1, across[0].name);
+
+    // A stray zip in a synced folder sorts below our own bundles.
+    const mixed = P.sortBundles([
+      { name: 'holiday-photos.zip', lastModified: 999 },
+      { name: 'annotate-session-2026-09-08-0900.zip', lastModified: 1 }
+    ]);
+    check('our own bundles come before unrelated zips',
+      mixed[0].name.indexOf('annotate-session') === 0, mixed[0].name);
+
+    check('sorting does not mutate the caller\'s array', (function () {
+      const input = [{ name: 'a.zip' }, { name: 'b.zip' }];
+      P.sortBundles(input);
+      return input[0].name === 'a.zip';
+    })());
+
+    // Files that arrived some other way fall back to their timestamp.
+    const tie = P.sortBundles([
+      { name: 'same.zip', lastModified: 100 },
+      { name: 'same.zip', lastModified: 300 }
+    ]);
+    check('identical names fall back to newest modified',
+      tie[0].lastModified === 300, String(tie[0].lastModified));
+  }
+
+  /* --- failures a person can act on -------------------------------------
+   * Two of these look identical from outside and are fixed in completely
+   * different ways: "allow it again" versus "that folder is gone". Collapsing
+   * them into one message would send people to the wrong remedy. */
+  {
+    const cancelled = P.describeError({ name: 'AbortError' });
+    check('closing the picker is not reported as a failure',
+      cancelled.kind === 'cancelled', cancelled.kind);
+    /* Chrome refuses Downloads, Desktop, Documents and the home folder with
+     * its OWN dialog saying they "contain system files" - baffling wording for
+     * a Downloads folder. Backing out of that dialog reaches us as a plain
+     * cancel, indistinguishable from a change of mind, so the cancel message
+     * has to carry the fix for a case we cannot detect. */
+    check('the cancel message carries the blocked-folder fix',
+      /system files/i.test(cancelled.text) && /subfolder/i.test(cancelled.text),
+      cancelled.text);
+
+    const denied = P.describeError({ name: 'NotAllowedError' });
+    check('a declined permission says so, and that retrying works',
+      denied.kind === 'denied' && /again/i.test(denied.text), denied.text);
+
+    const gone = P.describeError({ name: 'NotFoundError' });
+    check('a missing folder is distinguished from a denied one',
+      gone.kind === 'missing' && gone.kind !== denied.kind, gone.text);
+    check('the missing-folder message names the likely causes',
+      /moved|renamed|deleted/i.test(gone.text), gone.text);
+
+    const locked = P.describeError({ name: 'NoModificationAllowedError' });
+    check('a file held open elsewhere is explained',
+      locked.kind === 'locked' && /another program/i.test(locked.text), locked.text);
+
+    const odd = P.describeError({ name: 'WeirdError', message: 'something odd' });
+    check('an unknown failure still carries its message',
+      odd.kind === 'error' && odd.text === 'something odd', odd.text);
+    check('a failure with nothing useful still yields a sentence',
+      P.describeError(null).text.length > 0, P.describeError(null).text);
+  }
+
+  /* --- capability ------------------------------------------------------- */
+  {
+    check('support is reported from the API actually being present',
+      P.supported() === (typeof window.showDirectoryPicker === 'function'),
+      String(P.supported()));
+  }
+})();
+</script>
+</body>
+</html>

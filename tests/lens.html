@@ -1,0 +1,303 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Annotate Tool - magnifier geometry</title></head>
+<body>
+<div id="checks">pending</div>
+
+<script src="../core/lens.js"></script>
+
+<script>
+(function () {
+  const lines = [];
+  function flush() { document.getElementById('checks').textContent = lines.join('\n'); }
+  function check(label, ok, detail) {
+    lines.push((ok ? 'PASS ' : 'FAIL ') + label + (detail ? ' :: ' + detail : ''));
+    flush();
+  }
+  const near = (a, b, tol) => Math.abs(a - b) < (tol == null ? 0.001 : tol);
+
+  // A realistic case: a DPR-2 capture of a 1512x862 viewport, scaled into the
+  // review page's ~780px column.
+  const NAT = { w: 3024, h: 1724 };
+  const DISP = { w: 780, h: 444.6 };
+  const SIZE = AT.lens.SIZE;
+  const ZOOM = AT.lens.ZOOM;
+
+  check('the glass is 200px across', SIZE === 200, String(SIZE));
+  check('the magnification is 120%', ZOOM === 1.2, String(ZOOM));
+
+  /* --- the invariant that matters -------------------------------------
+   * Whatever sits under the cursor must appear at the CENTRE of the glass.
+   * A lens that is off by a fraction still looks plausible while showing the
+   * wrong part of the picture, so this is asserted at several points rather
+   * than eyeballed once. */
+  [
+    ['centre', DISP.w / 2, DISP.h / 2],
+    ['top-left corner', 0, 0],
+    ['bottom-right corner', DISP.w, DISP.h],
+    ['a third across, three quarters down', DISP.w / 3, DISP.h * 0.75],
+    ['an arbitrary interior point', 613.5, 118.25]
+  ].forEach(([name, mx, my]) => {
+    const g = AT.lens.compute({
+      mx: mx, my: my, dw: DISP.w, dh: DISP.h, nw: NAT.w, nh: NAT.h
+    });
+    const centre = AT.lens.centreFraction(g, SIZE);
+    check('what is under the cursor is centred in the glass (' + name + ')',
+      near(centre.x, mx / DISP.w) && near(centre.y, my / DISP.h),
+      'centre=' + centre.x.toFixed(4) + ',' + centre.y.toFixed(4) +
+      ' cursor=' + (mx / DISP.w).toFixed(4) + ',' + (my / DISP.h).toFixed(4));
+  });
+
+  /* --- the lens follows the cursor ------------------------------------- */
+  {
+    const g = AT.lens.compute({
+      mx: 400, my: 200, dw: DISP.w, dh: DISP.h, nw: NAT.w, nh: NAT.h
+    });
+    check('the glass is centred on the cursor, not offset from it',
+      g.left === 400 - SIZE / 2 && g.top === 200 - SIZE / 2,
+      g.left + ',' + g.top);
+  }
+
+  /* --- 120% is of NATURAL size, not of the shrunken display ------------
+   * This is the whole point of the feature. Magnifying 120% of the DISPLAYED
+   * size would be a 1.2x zoom on an image already shrunk to a quarter - barely
+   * a magnifier at all. */
+  {
+    const g = AT.lens.compute({
+      mx: 10, my: 10, dw: DISP.w, dh: DISP.h, nw: NAT.w, nh: NAT.h
+    });
+    check('the magnified image is 120% of natural width',
+      near(g.bgW, NAT.w * 1.2, 0.01), g.bgW + ' vs ' + NAT.w * 1.2);
+    check('the magnified image keeps its aspect ratio',
+      near(g.bgW / g.bgH, NAT.w / NAT.h, 0.0001),
+      (g.bgW / g.bgH).toFixed(4) + ' vs ' + (NAT.w / NAT.h).toFixed(4));
+
+    // Against the fitted view the effective zoom is far more than 1.2x, which
+    // is exactly why the small screenshot becomes readable.
+    const effective = g.bgW / DISP.w;
+    check('effective magnification over the fitted view is substantial',
+      effective > 4, effective.toFixed(2) + 'x the displayed size');
+  }
+
+  /* --- an image not laid out yet must not poison the numbers ----------- */
+  {
+    const g = AT.lens.compute({
+      mx: 50, my: 50, dw: 0, dh: 0, nw: NAT.w, nh: NAT.h
+    });
+    const finite = [g.left, g.top, g.bgX, g.bgY, g.bgW, g.bgH].every(Number.isFinite);
+    check('a zero-size image yields numbers, not NaN', finite,
+      JSON.stringify(g));
+  }
+
+  /* --- the 100% view opens on what you clicked -------------------------
+   * Landing at the top-left corner throws away the one thing the click told
+   * us. On a 3000px capture that means hunting with scrollbars for the thing
+   * you just pointed at. */
+  {
+    const FRAME = { w: 780, h: 600 };
+
+    const mid = AT.lens.focusScroll({
+      fx: 0.5, fy: 0.5, nw: NAT.w, nh: NAT.h, cw: FRAME.w, ch: FRAME.h
+    });
+    check('a click in the middle centres the middle',
+      near(mid.left + FRAME.w / 2, NAT.w / 2, 0.5) &&
+      near(mid.top + FRAME.h / 2, NAT.h / 2, 0.5),
+      mid.left + ',' + mid.top);
+
+    // A point three quarters across should sit at the centre of the frame.
+    const q = AT.lens.focusScroll({
+      fx: 0.75, fy: 0.25, nw: NAT.w, nh: NAT.h, cw: FRAME.w, ch: FRAME.h
+    });
+    check('an off-centre click is centred too',
+      near(q.left + FRAME.w / 2, NAT.w * 0.75, 0.5) &&
+      near(q.top + FRAME.h / 2, NAT.h * 0.25, 0.5),
+      q.left + ',' + q.top);
+
+    /* Clamping. A negative scrollLeft is silently ignored by the browser, so
+     * an unclamped value near an edge would look like it simply did nothing. */
+    const tl = AT.lens.focusScroll({
+      fx: 0, fy: 0, nw: NAT.w, nh: NAT.h, cw: FRAME.w, ch: FRAME.h
+    });
+    check('a click at the top-left clamps to zero, never negative',
+      tl.left === 0 && tl.top === 0, tl.left + ',' + tl.top);
+
+    const br = AT.lens.focusScroll({
+      fx: 1, fy: 1, nw: NAT.w, nh: NAT.h, cw: FRAME.w, ch: FRAME.h
+    });
+    check('a click at the bottom-right clamps to the far edge',
+      br.left === NAT.w - FRAME.w && br.top === NAT.h - FRAME.h,
+      br.left + ',' + br.top);
+
+    // An image smaller than its frame has nowhere to scroll.
+    const small = AT.lens.focusScroll({
+      fx: 0.5, fy: 0.5, nw: 300, nh: 200, cw: FRAME.w, ch: FRAME.h
+    });
+    check('an image smaller than the frame yields no scroll',
+      small.left === 0 && small.top === 0, small.left + ',' + small.top);
+
+    /* The whole point: two different clicks must land in different places. */
+    const a = AT.lens.focusScroll({
+      fx: 0.2, fy: 0.2, nw: NAT.w, nh: NAT.h, cw: FRAME.w, ch: FRAME.h });
+    const b = AT.lens.focusScroll({
+      fx: 0.8, fy: 0.8, nw: NAT.w, nh: NAT.h, cw: FRAME.w, ch: FRAME.h });
+    check('different clicks open on different parts of the image',
+      a.left !== b.left && a.top !== b.top,
+      '(' + a.left + ',' + a.top + ') vs (' + b.left + ',' + b.top + ')');
+  }
+
+  /* --- stepping through a review at 100% -------------------------------
+   * Each annotation must arrive centred on ITS OWN pin, not on wherever the
+   * previous item was left scrolled to. */
+  {
+    const FRAME = { w: 780, h: 445 };
+
+    // A pin is expressed in percentages of the image, the way it is positioned
+    // in CSS; the scroll maths works in 0..1 fractions.
+    const c = AT.lens.pinCentre({ left: 10, top: 20, width: 10, height: 10 });
+    check('a pin resolves to the centre of its own box',
+      near(c.fx, 0.15) && near(c.fy, 0.25), c.fx + ',' + c.fy);
+
+    /* No pin: a framed annotation, or an older bundle with no recorded rect.
+     * The middle is the honest default - a corner is not more informative. */
+    const none = AT.lens.pinCentre(null);
+    check('no pin falls back to the middle, not a corner',
+      none.fx === 0.5 && none.fy === 0.5, none.fx + ',' + none.fy);
+
+    /* End to end, with a pin far enough from every edge that centring is not
+     * clamped - otherwise the assertion would be testing the clamp rather than
+     * the centring. (A pin at 8% down a 1724px image sits 172px in, less than
+     * half a 445px frame, so it legitimately clamps to 0.) */
+    const mid = AT.lens.focusScroll(Object.assign(
+      AT.lens.pinCentre({ left: 12, top: 30, width: 6, height: 4 }),
+      { nw: NAT.w, nh: NAT.h, cw: FRAME.w, ch: FRAME.h }));
+    check('the view opens on the pin, not the origin',
+      mid.left > 0 && mid.top > 0,
+      mid.left.toFixed(0) + ',' + mid.top.toFixed(0));
+    check('the pin ends up in the middle of the frame',
+      near(mid.left + FRAME.w / 2, NAT.w * 0.15, 0.5) &&
+      near(mid.top + FRAME.h / 2, NAT.h * 0.32, 0.5),
+      'x ' + (mid.left + FRAME.w / 2).toFixed(1) + ' vs ' + (NAT.w * 0.15).toFixed(1) +
+      ' · y ' + (mid.top + FRAME.h / 2).toFixed(1) + ' vs ' + (NAT.h * 0.32).toFixed(1));
+
+    /* A pin too near the top to be centred should still scroll as far as it
+     * can rather than refusing - the clamp is a fallback, not a failure. */
+    const high = AT.lens.focusScroll(Object.assign(
+      AT.lens.pinCentre({ left: 60, top: 8, width: 6, height: 4 }),
+      { nw: NAT.w, nh: NAT.h, cw: FRAME.w, ch: FRAME.h }));
+    check('a pin too near the top still centres horizontally',
+      high.left > 0 && high.top === 0,
+      high.left.toFixed(0) + ',' + high.top);
+
+    /* Two different annotations must land in two different places - the whole
+     * point. A bug that ignored the pin would put both at the same offset and
+     * still look deliberate. */
+    const a = AT.lens.focusScroll(Object.assign(
+      AT.lens.pinCentre({ left: 15, top: 15, width: 4, height: 4 }),
+      { nw: NAT.w, nh: NAT.h, cw: FRAME.w, ch: FRAME.h }));
+    const b = AT.lens.focusScroll(Object.assign(
+      AT.lens.pinCentre({ left: 70, top: 60, width: 4, height: 4 }),
+      { nw: NAT.w, nh: NAT.h, cw: FRAME.w, ch: FRAME.h }));
+    check('two annotations open on two different places',
+      a.left !== b.left && a.top !== b.top,
+      '(' + a.left.toFixed(0) + ',' + a.top.toFixed(0) + ') vs (' +
+      b.left.toFixed(0) + ',' + b.top.toFixed(0) + ')');
+
+    // A pin hard against an edge still clamps rather than asking for negatives.
+    const edge = AT.lens.focusScroll(Object.assign(
+      AT.lens.pinCentre({ left: 0, top: 0, width: 2, height: 2 }),
+      { nw: NAT.w, nh: NAT.h, cw: FRAME.w, ch: FRAME.h }));
+    check('a pin at the very edge clamps instead of going negative',
+      edge.left === 0 && edge.top === 0, edge.left + ',' + edge.top);
+  }
+
+  /* --- the frame keeps its footprint at 100% ---------------------------
+   * Opening the full-size view must not move anything else on the page, so
+   * the frame stays exactly the height it had while fitted. */
+  {
+    const BORDER = 2; // 1px each side
+
+    const h = AT.lens.fittedBoxHeight({
+      boxW: 782, nw: NAT.w, nh: NAT.h, border: BORDER
+    });
+    // 780px of content at 3024x1724 -> 780 * (1724/3024) = 444.6, + 2 border.
+    check('the fitted footprint matches the scaled image plus its border',
+      near(h, 780 * (NAT.h / NAT.w) + BORDER, 0.01), h.toFixed(2));
+
+    check('the footprint keeps the image aspect ratio',
+      near((h - BORDER) / (782 - BORDER), NAT.h / NAT.w, 0.0001),
+      ((h - BORDER) / 780).toFixed(4) + ' vs ' + (NAT.h / NAT.w).toFixed(4));
+
+    /* An image NARROWER than the column is not stretched by max-width:100%,
+     * so its footprint is its own height, not the column's scaled height. */
+    const small = AT.lens.fittedBoxHeight({
+      boxW: 782, nw: 300, nh: 200, border: BORDER
+    });
+    check('a narrow image is not stretched to the column',
+      near(small, 200 + BORDER, 0.01), small.toFixed(2));
+
+    check('a missing natural size yields 0 rather than NaN',
+      AT.lens.fittedBoxHeight({ boxW: 782, nw: 0, nh: 0, border: BORDER }) === 0);
+
+    /* The whole point: the height must NOT depend on how tall the image is at
+     * 100%, only on the fitted layout. A frame sized to the full image is the
+     * page-shoving behaviour being fixed. */
+    check('the footprint is independent of the 100% height',
+      h < NAT.h, h.toFixed(0) + ' vs a ' + NAT.h + 'px tall image');
+  }
+
+  /* --- panning: centreOf must invert focusScroll -----------------------
+   * After a drag, the view records what is now in the middle so that leaving
+   * and re-entering the 100% view returns to the same place. That only works
+   * if the two functions are exact inverses, which is asserted here rather
+   * than assumed - a slow drift would be invisible until someone noticed the
+   * view creeping. */
+  {
+    const FRAME = { w: 780, h: 600 };
+
+    [[0.5, 0.5], [0.35, 0.62], [0.75, 0.25]].forEach(([fx, fy]) => {
+      const s = AT.lens.focusScroll({
+        fx: fx, fy: fy, nw: NAT.w, nh: NAT.h, cw: FRAME.w, ch: FRAME.h
+      });
+      const back = AT.lens.centreOf({
+        scrollLeft: s.left, scrollTop: s.top,
+        cw: FRAME.w, ch: FRAME.h, nw: NAT.w, nh: NAT.h
+      });
+      check('scroll position round-trips at ' + fx + ',' + fy,
+        near(back.fx, fx, 0.0001) && near(back.fy, fy, 0.0001),
+        back.fx.toFixed(4) + ',' + back.fy.toFixed(4));
+    });
+
+    // Panning to the very start means the frame's centre is half a frame in.
+    const atStart = AT.lens.centreOf({
+      scrollLeft: 0, scrollTop: 0,
+      cw: FRAME.w, ch: FRAME.h, nw: NAT.w, nh: NAT.h
+    });
+    check('scrolled to the origin reports the frame centre, not 0',
+      near(atStart.fx, (FRAME.w / 2) / NAT.w, 0.0001),
+      atStart.fx.toFixed(4));
+
+    check('a zero-size image reports zero rather than NaN',
+      (function () {
+        const c = AT.lens.centreOf({
+          scrollLeft: 0, scrollTop: 0, cw: 0, ch: 0, nw: 0, nh: 0 });
+        return c.fx === 0 && c.fy === 0;
+      })());
+  }
+
+  /* --- custom size and zoom are honoured ------------------------------- */
+  {
+    const g = AT.lens.compute({
+      mx: 100, my: 100, dw: 200, dh: 200, nw: 1000, nh: 1000,
+      size: 100, zoom: 2
+    });
+    check('an explicit size and zoom override the defaults',
+      g.bgW === 2000 && g.left === 50, g.bgW + ' / ' + g.left);
+    const centre = AT.lens.centreFraction(g, 100);
+    check('the invariant still holds at a custom size and zoom',
+      near(centre.x, 0.5) && near(centre.y, 0.5),
+      centre.x + ',' + centre.y);
+  }
+})();
+</script>
+</body>
+</html>

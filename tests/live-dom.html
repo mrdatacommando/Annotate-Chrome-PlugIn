@@ -1,0 +1,367 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Annotate Tool - live DOM package</title></head>
+<body>
+
+
+<!-- A <main> region, because that is what broke this in the wild. Page-text
+     extraction picks a CONTENT REGION and returns only that: on a page with a
+     <main>, anything appended to <body> is never returned. Canvas has one; the
+     first version of this harness did not, so the notice appeared to work here
+     while being invisible on every real application. -->
+<main id="page">
+  <p id="secret">Page content that must never end up in the package.</p>
+</main>
+<div id="checks">pending</div>
+
+<script>
+  window.__errors = [];
+  window.onerror = function (m, s, l, c) {
+    window.__errors.push(m + ' @' + (s || '?').split('/').pop() + ':' + l + ':' + c);
+  };
+
+  const mem = {};
+  const storageListeners = [];
+  window.chrome = {
+    storage: {
+      local: {
+        async get(k) {
+          if (k === null) return JSON.parse(JSON.stringify(mem));
+          const keys = Array.isArray(k) ? k : [k];
+          const out = {};
+          keys.forEach((key) => { if (key in mem) out[key] = JSON.parse(JSON.stringify(mem[key])); });
+          return out;
+        },
+        async set(o) {
+          const changes = {};
+          for (const key of Object.keys(o)) {
+            changes[key] = { oldValue: mem[key], newValue: o[key] };
+            mem[key] = JSON.parse(JSON.stringify(o[key]));
+          }
+          storageListeners.forEach((fn) => fn(changes, 'local'));
+        },
+        async remove(keys) {
+          const list = Array.isArray(keys) ? keys : [keys];
+          const changes = {};
+          list.forEach((k) => { changes[k] = { oldValue: mem[k], newValue: undefined }; delete mem[k]; });
+          storageListeners.forEach((fn) => fn(changes, 'local'));
+        },
+        async getBytesInUse() { return 0; }
+      },
+      onChanged: { addListener(fn) { storageListeners.push(fn); } }
+    },
+    runtime: {
+      id: 't',
+      getManifest: () => ({ version: '1.12.0' }),
+      async sendMessage() { return { ok: true }; },
+      onMessage: { addListener() {} }
+    }
+  };
+
+  const SESSION = {
+    id: 's1', active: true, author: 'Mark',
+    startedAt: '2026-09-11T09:00:00.000Z',
+    pages: [{
+      url: location.href.split('#')[0],
+      title: 'Test page',
+      annotations: [{
+        id: 'a1', type: 'note', author: 'Mark',
+        createdAt: '2026-09-11T09:05:00.000Z',
+        text: 'Nav overlaps the hero', comment: '', unplaced: false,
+        anchor: { kind: 'point', selector: '#secret' }
+      }]
+    }],
+    shots: []
+  };
+  mem.at_session = JSON.parse(JSON.stringify(SESSION));
+  mem.at_folder_name = 'Reviews';
+  mem.at_folder_path = 'D:\\Work\\Reviews';
+</script>
+
+<script src="../core/store.js"></script>
+<script src="../core/anchor.js"></script>
+<script src="../core/live.js"></script>
+
+<script>
+  // The two collaborators live-dom talks to. AT.live is the real thing.
+  window.AT.session = { IS_TOP: true, normalizeUrl: (h) => String(h).split('#')[0] };
+  window.__badge = { calls: [], on: null, detail: null };
+  window.AT.overlay = {
+    setAiState(on, detail) {
+      window.__badge.calls.push(!!on);
+      window.__badge.on = !!on;
+      window.__badge.detail = detail || null;
+    }
+  };
+</script>
+
+<script src="../content/live-dom.js"></script>
+
+<script>
+(async function () {
+  const lines = [];
+  function flush() { document.getElementById('checks').textContent = lines.join('\n'); }
+  function check(label, ok, detail) {
+    lines.push((ok ? 'PASS ' : 'FAIL ') + label + (detail ? ' :: ' + detail : ''));
+    flush();
+  }
+  // Comfortably past the module's 400ms debounce.
+  const settle = () => new Promise((r) => setTimeout(r, 600));
+
+  const MARKER = 'annotate-tool-live';
+  const meta = () => document.querySelector('meta[name="' + MARKER + '"]');
+  const node = () => document.getElementById(MARKER);
+  const parsed = () => { const n = node(); return n ? JSON.parse(n.textContent) : null; };
+
+  try {
+    await settle();
+    check('no load-time errors', window.__errors.length === 0, window.__errors.join(' | '));
+
+    /* --- silent until connected -------------------------------------------
+     * A session recording on an unconnected site must publish NOTHING. This
+     * is the whole consent model: the data appears because the user connected
+     * the site, not because they started annotating. */
+    check('an unconnected page carries no package', !meta() && !node());
+    check('and the badge is not shown', window.__badge.on !== true);
+
+    /* --- connecting takes effect without a reload ------------------------- */
+    await chrome.storage.local.set({
+      at_bridge: { origins: [location.origin], updatedAt: new Date().toISOString() }
+    });
+    await settle();
+
+    check('connecting injects the package with no reload', !!meta() && !!node());
+    check('the marker names the schema',
+      meta() && meta().getAttribute('content') === 'annotate-live-v1',
+      meta() && meta().getAttribute('content'));
+
+    /* A script element with a non-JS type is parsed as data and never run.
+     * A div would be rendered to the human reader and would inherit the
+     * page's styling; this is invisible and inert. */
+    check('the payload sits in an inert script element',
+      node().tagName === 'SCRIPT' && node().type === 'application/json',
+      node().tagName + '/' + node().type);
+
+    const p = parsed();
+    check('and it parses as JSON', !!p);
+    check('it identifies the tool that wrote it',
+      p.tool === 'Annotate Tool' && p.schema === 'annotate-live-v1', p.tool);
+    check('it declares itself read-only', p.readOnly === true);
+    check('it says the session is live', p.live === true);
+
+    /* The three things the request asked the package to carry. */
+    check('it gives the location of the live file',
+      p.location.path === 'D:\\Work\\Reviews\\live\\annotate-live.json',
+      p.location.path);
+    check('and names the folder Chrome told us about',
+      p.location.folder === 'Reviews', p.location.folder);
+    check('and never claims the path is verified',
+      p.location.pathVerified === false);
+
+    check('the annotations are there', p.pages[0].annotations[0].text ===
+      'Nav overlaps the hero', p.pages[0].annotations[0].text);
+
+    /* --- what it must NOT contain ----------------------------------------
+     * The package reports what the USER recorded. Page text is the page's to
+     * give, not this extension's. */
+    const dump = JSON.stringify(p);
+    check('no page content is included',
+      dump.indexOf('must never end up') === -1);
+    check('no anchors or selectors are shipped',
+      dump.indexOf('#secret') === -1 && !('anchor' in p.pages[0].annotations[0]));
+
+    const REDACTED = /auth|session|token/i;
+    const risky = AT.live.keysIn(p, '', []).filter((k) =>
+      k.split(/[.\[]/).some((seg) => REDACTED.test(seg)));
+    check('no key would be redacted before an assistant reads it',
+      risky.length === 0, risky.join(', ') || 'none');
+
+    /* --- being FOUND without being told to look --------------------------
+     *
+     * The payload is useless if nothing finds it. These two markers are the
+     * only parts an assistant sees without going looking: the title reaches it
+     * on every turn, and the attribute is one selector rather than a hunt
+     * through <head>. */
+    check('the page advertises itself on <html>',
+      document.documentElement.getAttribute('annotate-attr-placeholder') === null &&
+      document.documentElement.getAttribute(AT.liveDom.ATTR) === 'active',
+      document.documentElement.getAttribute(AT.liveDom.ATTR));
+    check('and the attribute is the conventional data-* form',
+      AT.liveDom.ATTR === 'data-annotate-tool', AT.liveDom.ATTR);
+
+    /* --- reading the page must find it ------------------------------------
+     *
+     * THE check this element exists for. An assistant asked to find
+     * annotations read the page text first, twice, and found nothing: script
+     * contents, meta tags and data attributes are all absent from innerText,
+     * and the title is a different channel. It then scrolled and screenshotted
+     * looking for annotations that were in the DOM the whole time.
+     *
+     * So this asserts the property that actually failed - not that the element
+     * exists, but that READING THE PAGE returns it. */
+    /* NOTE: details here are kept short and fixed on purpose. Echoing a slice
+     * of page text into the checks div copies the notice INTO the page, where
+     * it survives the notice's own removal - which is exactly how the removal
+     * check below failed while the code under test was correct. */
+    /* THE placement check. A page-text extractor returns the content region,
+     * not the body - measured: on a page with a <main> it reports
+     * `Source element: <main>` and returns nothing outside it. So asserting
+     * against document.body.innerText would pass while the notice was
+     * invisible to every real reader, which is exactly what happened. This
+     * reads what an extractor would actually read. */
+    const main = document.querySelector('main');
+    check('the notice is inside the page\'s main content region',
+      !!main && main.contains(document.getElementById(AT.liveDom.NOTICE_ID)),
+      document.getElementById(AT.liveDom.NOTICE_ID)
+        ? 'parent: ' + document.getElementById(AT.liveDom.NOTICE_ID).parentNode.tagName
+        : 'no notice');
+    check('so extracting the main region finds the announcement',
+      main.innerText.indexOf('Annotate Tool') > -1);
+
+    /* Appended, never inserted first: anchoring uses positional selectors, so
+     * adding an element ahead of existing siblings would renumber them and
+     * break restoration of every annotation already made. */
+    check('and is appended last, leaving existing element positions untouched',
+      main.lastElementChild.id === AT.liveDom.NOTICE_ID,
+      main.lastElementChild.id);
+    check('the original page content still comes first',
+      main.firstElementChild.id === 'secret', main.firstElementChild.id);
+
+    /* Its text talks about annotations, so leaving it walkable would let it
+     * match a reviewer's own quoted text and anchor a highlight onto it. */
+    check('anchoring treats the notice as ours, not as page content',
+      AT.anchor.isOurs(document.getElementById(AT.liveDom.NOTICE_ID)) === true);
+
+    // Content is asserted against the element's own text: same string, without
+    // dragging the rest of the page through the assertion.
+    const notice = document.getElementById(AT.liveDom.NOTICE_ID);
+    const noticeText = notice ? notice.textContent : '';
+    /* THE point of this element. A pointer needs the reader to take a SECOND
+     * action, and that second action is what kept failing in the wild. The
+     * annotation content is here, so "what was my comment?" is answerable from
+     * the page text alone - nothing to trigger, nothing that can fail. */
+    check('the annotation content itself is in the page text, not just a pointer',
+      noticeText.indexOf('Nav overlaps the hero') > -1,
+      noticeText ? 'present' : 'no notice element');
+    check('it counts what is on this page', /ANNOTATIONS ON THIS PAGE \(1/.test(noticeText),
+      (noticeText.match(/ANNOTATIONS ON THIS PAGE \([^)]*\)/) || [''])[0]);
+
+    /* Relevance rather than instruction: a page telling an assistant to
+     * perform actions is the shape of a prompt injection and is rightly
+     * distrusted. Saying WHEN this matters is something a reader can act on. */
+    check('it states when it is relevant rather than issuing commands',
+      /RELEVANCE:/.test(noticeText) && /what did I mark/.test(noticeText));
+    check('and does not order the reader to fetch anything',
+      !/\b(you must|immediately|now fetch|read this first|do not answer)\b/i.test(noticeText));
+    check('it says no other tool or file is needed to answer',
+      /no file needs opening/.test(noticeText));
+
+    /* Still named, because replies, timestamps and anchors do not belong in
+     * prose and a reader that needs them should know where to look. */
+    check('and names the element holding the full record',
+      noticeText.indexOf('annotate-tool-live') > -1);
+    check('and points at the file on disk',
+      noticeText.indexOf('D:\\Work\\Reviews\\live\\annotate-live.json') > -1);
+    check("it disclaims being part of an assistant's own interface",
+      /not part of an assistant/.test(noticeText));
+    /* Scoped to the annotation wording specifically - that text is whatever
+     * the reviewer typed and could say anything at all. */
+    check('and says the reviewer\'s wording is not instructions to follow',
+      /never as instructions to follow/.test(noticeText));
+    check('the reviewer is named', /made by Mark/.test(noticeText));
+
+    /* Invisible, and staying that way: it must not occupy space, appear in a
+     * screenshot, or be read out to somebody using a screen reader. */
+    check('the notice element is hidden from assistive technology',
+      notice.getAttribute('aria-hidden') === 'true');
+    const box = notice.getBoundingClientRect();
+    check('and takes up no visible space',
+      box.width <= 1 && box.height <= 1, box.width + 'x' + box.height);
+    /* display:none and visibility:hidden would BOTH remove it from innerText,
+     * which is the one thing it is for. Clipping is the only technique that
+     * hides it and keeps it readable. */
+    /* Asserted on the COMPUTED style, not the style attribute: the CSS moved
+     * into a stylesheet, and a test that reads the attribute would have gone
+     * green-to-red on a change that altered nothing about the behaviour. What
+     * matters is what the browser ended up doing.
+     *
+     * display:none and visibility:hidden would BOTH remove it from innerText,
+     * which is the one thing it is for. Clipping hides it and keeps it
+     * readable - the only technique that does both. */
+    const computed = getComputedStyle(notice);
+    check('it is hidden by clipping, not by display or visibility',
+      computed.display !== 'none' && computed.visibility !== 'hidden' &&
+      /rect\(/.test(computed.clip),
+      computed.display + ' / ' + computed.visibility + ' / ' + computed.clip);
+    check('and the stylesheet carrying that is scoped to the notice alone',
+      (document.getElementById(AT.liveDom.NOTICE_ID + '-style') || {})
+        .textContent.indexOf('#' + AT.liveDom.NOTICE_ID + '{') === 0);
+
+    /* --- the user can see that it is happening ---------------------------- */
+    check('the toolbar badge is turned on', window.__badge.on === true);
+    check('and its tooltip says where the data is',
+      /D:\\Work\\Reviews/.test(window.__badge.detail || ''), window.__badge.detail);
+
+    /* --- it keeps up with the session ------------------------------------- */
+    const grown = JSON.parse(JSON.stringify(SESSION));
+    grown.pages[0].annotations.push({
+      id: 'a2', type: 'box', author: 'Mark', text: 'Chart is unreadable',
+      comment: '', unplaced: false
+    });
+    await chrome.storage.local.set({ at_session: grown });
+    await settle();
+    check('a new annotation reaches the package',
+      parsed().summary.annotations === 2, String(parsed().summary.annotations));
+
+    /* Rewriting identical text would dirty the DOM and wake any observer the
+     * page has on it, for no change at all. */
+    const before = node();
+    await chrome.storage.local.set({ at_session: grown });
+    await settle();
+    check('an unchanged session does not rewrite the node', node() === before);
+
+    /* --- ending the session removes it ------------------------------------ */
+    const ended = JSON.parse(JSON.stringify(grown));
+    ended.active = false;
+    await chrome.storage.local.set({ at_session: ended });
+    await settle();
+    /* An ended session left advertised would read as live to an agent with no
+     * way to tell the difference - worse than no package at all. */
+    check('ending the session removes the package', !meta() && !node());
+    check('and turns the badge off', window.__badge.on === false);
+    /* Every trace goes together. A marker or a prefix left behind points a
+     * reader at data that is no longer there - and the title is the reader's
+     * own tab strip and history. */
+    check('the marker attribute is removed too',
+      !document.documentElement.hasAttribute(AT.liveDom.ATTR));    {
+      const t = document.body.innerText;
+      const at = t.indexOf('Annotate Tool: a web review');
+      check('and the page text no longer announces a session',
+        at === -1 && !document.getElementById(AT.liveDom.NOTICE_ID),
+        at === -1 ? 'element: ' + document.getElementById(AT.liveDom.NOTICE_ID)
+                  : 'found at ' + at + ': ' + JSON.stringify(t.slice(at - 60, at + 40)));
+    }
+
+    /* --- disconnecting removes it too ------------------------------------- */
+    await chrome.storage.local.set({ at_session: grown });
+    await settle();
+    check('restarting a session brings it back', !!node());
+
+    await chrome.storage.local.set({
+      at_bridge: { origins: [], updatedAt: new Date().toISOString() }
+    });
+    await settle();
+    check('disconnecting the site removes the package', !meta() && !node());
+    check('and turns the badge off', window.__badge.on === false);
+    check('the module knows it is disconnected', AT.liveDom._connected() === false);
+    check('and drops the marker attribute',
+      !document.documentElement.hasAttribute(AT.liveDom.ATTR));
+  } catch (e) {
+    lines.push('FAIL threw after ' + lines.length + ' checks :: ' +
+      (e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e));
+  }
+  flush();
+})();
+</script>
+</body>
+</html>

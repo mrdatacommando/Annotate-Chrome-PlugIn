@@ -1,0 +1,135 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Annotate Tool - report + zip test</title></head>
+<body>
+<div id="checks">pending</div>
+<div id="b64"></div>
+
+<script src="../core/zip.js"></script>
+<script src="../core/report.js"></script>
+
+<script>
+(async function () {
+  const lines = [];
+  function check(label, ok, detail) {
+    lines.push((ok ? 'PASS ' : 'FAIL ') + label + (detail ? ' :: ' + detail : ''));
+  }
+
+  // 1x1 transparent PNG - stands in for a real captureVisibleTab result.
+  const PNG =
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ' +
+    'AAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+  /* --- CRC32 against a known vector --------------------------------- */
+  const crcCheck = AT.zip.crc32(new TextEncoder().encode('123456789'));
+  check('crc32 of "123456789" == 0xCBF43926', crcCheck === 0xcbf43926,
+        '0x' + crcCheck.toString(16).toUpperCase());
+
+  /* --- data URL decoding -------------------------------------------- */
+  const pngBytes = AT.zip.dataUrlToBytes(PNG);
+  const isPng = pngBytes[0] === 0x89 && pngBytes[1] === 0x50 &&
+                pngBytes[2] === 0x4e && pngBytes[3] === 0x47;
+  check('data URL decodes to PNG magic bytes', isPng, 'len=' + pngBytes.length);
+
+  /* --- a session with the awkward cases in it ------------------------ */
+  const session = {
+    id: 's_test',
+    startedAt: '2026-09-06T09:15:00.000Z',
+    endedAt: '2026-09-06T09:48:00.000Z',
+    active: false,
+    pages: [
+      {
+        url: 'https://example.com/pricing',
+        title: 'Pricing — café tiers',   // non-ASCII: exercises the UTF-8 flag
+        viewport: { w: 1512, h: 862, dpr: 2 },
+        visitedAt: '2026-09-06T09:15:10.000Z',
+        annotations: [
+          { id: 'a1', type: 'highlight', createdAt: '2026-09-06T09:16:00.000Z',
+            color: '#f4c430', text: 'Free forever', comment: 'Not true | see footer',
+            unplaced: false,
+            anchor: { kind: 'quote', selector: 'main > p:nth-of-type(2)',
+                      quote: { prefix: 'plan is ', exact: 'Free forever', suffix: ' for up to' } } },
+          { id: 'a2', type: 'note', createdAt: '2026-09-06T09:17:00.000Z',
+            color: '#ff8a3d', text: 'Overlaps the nav at 1280px', comment: '',
+            unplaced: true,
+            anchor: { kind: 'point', selector: 'body', offset: { x: 10, y: 20 } } },
+          // A region highlight: same type as a text highlight, told apart by
+          // its anchor kind. Must be labelled distinctly for a human reader.
+          { id: 'a3', type: 'highlight', createdAt: '2026-09-06T09:19:00.000Z',
+            color: '#4aa3f0', text: 'Image: hero-banner.png',
+            comment: 'Wrong crop on mobile', unplaced: false,
+            anchor: { kind: 'region', selector: '#hero > img',
+                      offset: { x: 0, y: 0 }, size: { w: 640, h: 320 } } }
+        ]
+      },
+      {
+        url: 'https://example.com/empty',
+        title: 'Nothing here',
+        viewport: { w: 1512, h: 862, dpr: 2 },
+        visitedAt: '2026-09-06T09:40:00.000Z',
+        annotations: []
+      }
+    ],
+    shots: [
+      { id: 'shot1', name: '', note: 'nav overlap', pageUrl: 'https://example.com/pricing',
+        pageTitle: 'Pricing', createdAt: '2026-09-06T09:18:00.000Z',
+        viewport: { w: 1512, h: 862, dpr: 2 } }
+    ]
+  };
+
+  const pixels = new Map([['shot1', PNG]]);
+  const built = AT.report.build(session, pixels);
+
+  check('folder name looks right', /^annotate-session-\d{4}-\d{2}-\d{2}-\d{4}$/.test(built.folder),
+        built.folder);
+  check('4 files emitted (README, json, md, 1 png)', built.files.length === 4,
+        built.files.map(f => f.name.split('/').pop()).join(', '));
+
+  const json = built.json;
+  check('annotationCount == 3', json.session.annotationCount === 3);
+  check('region highlight is labelled distinctly in report.md',
+    built.files.find(f => f.name.endsWith('report.md')).data.indexOf('Region highlight') > -1);
+  check('region anchor survives into report.json with its size',
+    json.pages[0].annotations[2].anchor.kind === 'region' &&
+    json.pages[0].annotations[2].anchor.size.w === 640,
+    JSON.stringify(json.pages[0].annotations[2].anchor.size));
+  check('README explains the two highlight forms',
+    built.files.find(f => f.name.endsWith('README.md')).data.indexOf('anchor.kind') > -1);
+  check('unplacedCount == 1', json.session.unplacedCount === 1);
+  check('screenshotCount == 1', json.session.screenshotCount === 1);
+  check('pageCount == 2', json.session.pageCount === 2);
+  check('screenshot linked to its page',
+        json.pages[0].screenshots.length === 1 && json.pages[1].screenshots.length === 0);
+  check('anchor quote preserved',
+        json.pages[0].annotations[0].anchor.quote.exact === 'Free forever');
+
+  const mdFile = built.files.find(f => f.name.endsWith('report.md'));
+  check('markdown escapes the pipe in a comment',
+        mdFile.data.indexOf('Not true \\| see footer') > -1);
+  check('markdown flags the unplaced annotation',
+        mdFile.data.indexOf('*(unplaced)*') > -1);
+  check('empty page gets an explicit note',
+        mdFile.data.indexOf('No annotations recorded on this page') > -1);
+
+  const jsonFile = built.files.find(f => f.name.endsWith('report.json'));
+  let reparsed = null;
+  try { reparsed = JSON.parse(jsonFile.data); } catch (e) {}
+  check('report.json is valid JSON', !!reparsed);
+
+  /* --- build the ZIP and hand the bytes back for real extraction ----- */
+  const blob = AT.zip.create(built.files);
+  check('zip blob is non-trivial', blob.size > 500, blob.size + ' bytes');
+
+  const buf = new Uint8Array(await blob.arrayBuffer());
+  check('zip starts with PK\\x03\\x04',
+        buf[0] === 0x50 && buf[1] === 0x4b && buf[2] === 0x03 && buf[3] === 0x04);
+
+  let bin = '';
+  for (let i = 0; i < buf.length; i++) bin += String.fromCharCode(buf[i]);
+  document.getElementById('b64').textContent = btoa(bin);
+
+  document.getElementById('checks').textContent = lines.join('\n');
+})();
+</script>
+</body>
+</html>

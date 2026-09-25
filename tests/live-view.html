@@ -1,0 +1,239 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Annotate Tool - live walkthrough</title></head>
+<body>
+
+<div id="page">
+  <h2 id="h">A page being walked through</h2>
+  <p id="p1">First paragraph the reviewer marked up.</p>
+  <p id="p2">Second paragraph, with another finding on it.</p>
+</div>
+
+<div id="checks">pending</div>
+
+<script>
+  window.__errors = [];
+  window.onerror = function (m, s, l, c) {
+    window.__errors.push(m + ' @' + (s || '?').split('/').pop() + ':' + l + ':' + c);
+  };
+
+  const mem = {};
+
+  /* The walkthrough record the review page writes before opening a live page.
+   * Every item points at THIS document, so stepping happens in situ rather
+   * than navigating - which is the path a harness can actually observe. */
+  mem.at_identity = { name: 'Sam', setAt: '2026-09-08T09:00:00.000Z' };
+  mem.at_review_live = {
+    index: 0,
+    total: 3,
+    startedAt: '2026-09-08T10:00:00.000Z',
+    items: [
+      { pageUrl: location.href, pageTitle: 'Test page',
+        ann: { id: 'a1', type: 'note', color: '#f4c430', author: 'Mark',
+               text: 'Heading is the wrong size', comment: '',
+               anchor: { kind: 'point', selector: '#h', offset: { x: 4, y: 4 } },
+               review: { status: 'open', replies: [] } } },
+      { pageUrl: location.href, pageTitle: 'Test page',
+        ann: { id: 'a2', type: 'note', color: '#ff8a3d', author: 'Mark',
+               text: 'This claim is unsupported', comment: 'See the footnote',
+               anchor: { kind: 'point', selector: '#p1', offset: { x: 6, y: 3 } },
+               review: { status: 'open', replies: [
+                 { author: 'Mark', at: '2026-09-08T09:30:00.000Z',
+                   text: 'Original reviewer note' } ] } } },
+      { pageUrl: location.href, pageTitle: 'Test page',
+        ann: { id: 'a3', type: 'note', color: '#4aa3f0', author: 'Mark',
+               text: 'Spacing is inconsistent', comment: '',
+               anchor: { kind: 'point', selector: '#p2', offset: { x: 8, y: 2 } },
+               review: { status: 'open', replies: [] } } }
+    ]
+  };
+
+  window.__sent = [];
+  window.chrome = {
+    storage: {
+      local: {
+        async get(k) {
+          if (k === null) return JSON.parse(JSON.stringify(mem));
+          if (typeof k === 'string') {
+            return k in mem ? { [k]: JSON.parse(JSON.stringify(mem[k])) } : {};
+          }
+          return {};
+        },
+        async set(o) {
+          for (const key of Object.keys(o)) mem[key] = JSON.parse(JSON.stringify(o[key]));
+        },
+        async remove(keys) { (Array.isArray(keys) ? keys : [keys]).forEach(k => delete mem[k]); },
+        async getBytesInUse() { return 0; }
+      },
+      onChanged: { addListener() {} }
+    },
+    runtime: {
+      id: 't',
+      async sendMessage(msg) { window.__sent.push(msg); return { ok: true }; },
+      onMessage: { addListener() {} }
+    }
+  };
+</script>
+
+<script src="../core/store.js"></script>
+<script src="../core/anchor.js"></script>
+<script src="../core/session.js"></script>
+<script src="../core/box-tool.js"></script>
+<script src="../tools/highlight.js"></script>
+<script src="../tools/note.js"></script>
+<script src="../tools/box.js"></script>
+<script src="../tools/arrow.js"></script>
+<script src="../content/overlay.js"></script>
+<script src="../content/review-mode.js"></script>
+
+<script>
+(async function () {
+  const lines = [];
+  function flush() { document.getElementById('checks').textContent = lines.join('\n'); }
+  function check(label, ok, detail) {
+    lines.push((ok ? 'PASS ' : 'FAIL ') + label + (detail ? ' :: ' + detail : ''));
+    flush();
+  }
+  const tick = (ms) => new Promise(r => setTimeout(r, ms || 60));
+  const R = () => AT.reviewMode;
+  const shadow = () => R()._shadow();
+  const q = (sel) => shadow() && shadow().querySelector(sel);
+  const btn = (label) => Array.from(shadow().querySelectorAll('.btn'))
+    .find(b => b.textContent.indexOf(label) === 0);
+
+  try {
+    await tick(500); // boot waits 250ms for the overlay to exist
+
+    check('no load-time errors', window.__errors.length === 0, window.__errors.join(' | '));
+    check('the live HUD mounted', !!document.getElementById('at-review-hud'));
+    check('its shadow root is closed to the page',
+      document.getElementById('at-review-hud').shadowRoot === null);
+    check('the walkthrough loaded every item', R()._items().length === 3,
+      String(R()._items().length));
+
+    /* --- 1. stepping ---------------------------------------------------- */
+    check('it opens on the first item', R()._index() === 0);
+    check('the count reads 1 of 3', q('.count') && q('.count').textContent === '1 of 3',
+      q('.count') && q('.count').textContent);
+    check('the first item is drawn on the page',
+      AT.overlay.layer.querySelectorAll('[data-at-review="1"]').length === 1);
+
+    // Back is unavailable at the start, forward is not.
+    const prev0 = shadow().querySelectorAll('.btn.step')[0];
+    const next0 = shadow().querySelectorAll('.btn.step')[1];
+    check('back is disabled on the first item', prev0.disabled === true);
+    check('forward is available on the first item', next0.disabled === false);
+
+    next0.click();
+    await tick(120);
+    check('forward moves to the second item', R()._index() === 1);
+    check('the count follows', q('.count').textContent === '2 of 3',
+      q('.count').textContent);
+    check('the HUD shows the new item\'s text',
+      q('.text').textContent === 'This claim is unsupported', q('.text').textContent);
+    /* The previous item's drawing must be cleared, or stepping would leave a
+     * trail of every annotation visited. */
+    check('only the current item is drawn',
+      AT.overlay.layer.querySelectorAll('[data-at-review="1"]').length === 1,
+      String(AT.overlay.layer.querySelectorAll('[data-at-review="1"]').length));
+
+    // The review page follows this, so returning lands on the right item.
+    check('the stored index followed the step',
+      (await chrome.storage.local.get('at_review_live')).at_review_live.index === 1);
+
+    shadow().querySelectorAll('.btn.step')[0].click();
+    await tick(120);
+    check('back returns to the first item', R()._index() === 0);
+
+    // Step to the end and check forward stops.
+    await R()._goTo(2);
+    await tick(120);
+    check('it can reach the last item', R()._index() === 2);
+    check('forward is disabled on the last item',
+      shadow().querySelectorAll('.btn.step')[1].disabled === true);
+
+    /* --- 2. the review pane --------------------------------------------- */
+    await R()._goTo(1); // the item that has a comment and a reply
+    await tick(120);
+
+    check('the pane is closed until asked for', R()._expanded() === false);
+    check('the Details button counts existing replies',
+      btn('Details').textContent.indexOf('(1)') > -1, btn('Details').textContent);
+
+    btn('Details').click();
+    await tick(80);
+    check('Details opens the pane', R()._expanded() === true);
+    const pane = q('.pane');
+    check('the pane is visible', pane && pane.hidden === false);
+    check('the pane shows the annotation text',
+      pane.textContent.indexOf('This claim is unsupported') > -1);
+    check('the pane shows the original comment',
+      pane.textContent.indexOf('See the footnote') > -1);
+    check('the pane shows the existing reply',
+      pane.textContent.indexOf('Original reviewer note') > -1 &&
+      pane.textContent.indexOf('Mark') > -1);
+
+    /* --- 3. replying from live view -------------------------------------- */
+    const ta = q('.pane textarea');
+    check('the pane offers a reply box', !!ta);
+    check('the reply box names who is replying',
+      ta.placeholder.indexOf('Sam') > -1, ta.placeholder);
+
+    ta.value = 'Confirmed on staging, raising a ticket';
+    btn('Post reply').click();
+    await tick(150);
+
+    const saved = (await chrome.storage.local.get('at_review')).at_review;
+    check('the reply was written to the review state',
+      !!(saved && saved.statuses && saved.statuses.a2), JSON.stringify(saved || {}).slice(0, 80));
+    const replies = saved && saved.statuses && saved.statuses.a2.replies;
+    check('it was appended after the original, not replacing it',
+      replies && replies.length === 2 && replies[0].text === 'Original reviewer note',
+      replies ? replies.map(r => r.author).join(',') : 'none');
+    check('the new reply carries this reviewer\'s name',
+      replies && replies[1].author === 'Sam', replies && replies[1].author);
+    check('the new reply carries a timestamp',
+      replies && !!replies[1].at, replies && replies[1].at);
+    check('the pane shows the reply straight away',
+      q('.pane').textContent.indexOf('Confirmed on staging') > -1);
+    check('the reply box was cleared after posting',
+      q('.pane textarea').value === '');
+    check('the Details counter now reads 2',
+      btn('Hide').textContent.indexOf('(2)') > -1, btn('Hide').textContent);
+
+    /* --- 4. keystrokes stay inside the pane ------------------------------ */
+    {
+      /* Same trap as the annotate editor: a closed shadow root retargets key
+       * events to the host, defeating the guard sites put on single-letter
+       * shortcuts. Without containment the reply box loses letters. */
+      let pageSaw = [];
+      const spy = (e) => {
+        if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+        pageSaw.push(e.key);
+      };
+      document.addEventListener('keydown', spy);
+      q('.pane textarea').dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'n', bubbles: true, composed: true, cancelable: true }));
+      await tick(40);
+      document.removeEventListener('keydown', spy);
+      check('the page does not see keys typed into the reply box',
+        pageSaw.length === 0, JSON.stringify(pageSaw));
+    }
+
+    /* --- 5. closing ------------------------------------------------------ */
+    btn('Dismiss').click();
+    await tick(80);
+    check('Dismiss removes the HUD', !document.getElementById('at-review-hud'));
+    check('Dismiss clears the walkthrough record',
+      !(await chrome.storage.local.get('at_review_live')).at_review_live);
+    check('Dismiss leaves nothing drawn on the page',
+      AT.overlay.layer.querySelectorAll('[data-at-review="1"]').length === 0);
+  } catch (e) {
+    lines.push('FAIL threw after ' + lines.length + ' checks :: ' +
+      (e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e));
+  }
+  flush();
+})();
+</script>
+</body>
+</html>

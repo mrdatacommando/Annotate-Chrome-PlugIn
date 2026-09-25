@@ -1,0 +1,164 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Annotate Tool - frames</title></head>
+<body>
+
+<p id="topcontent">Text in the top document.</p>
+
+<!-- Two frames, so the index part of the frame path is actually exercised.
+     One frame alone would pass even if framePath() always returned [0]. -->
+<iframe id="f0" src="frame-child.html" width="400" height="180"></iframe>
+<iframe id="f1" src="frame-child.html" width="400" height="180"></iframe>
+<iframe id="f2" src="frame-child.html" width="400" height="180" sandbox></iframe>
+
+<div id="checks">pending</div>
+
+<script>
+  window.__errors = [];
+  window.onerror = function (m, s, l, c) {
+    window.__errors.push(m + ' @' + (s || '?').split('/').pop() + ':' + l + ':' + c);
+  };
+  const mem = {};
+  window.__sent = [];
+  window.chrome = {
+    storage: {
+      local: {
+        async get(k) {
+          if (k === null) return Object.assign({}, mem);
+          if (typeof k === 'string') return k in mem ? { [k]: mem[k] } : {};
+          return {};
+        },
+        async set(o) { Object.assign(mem, o); },
+        async remove(keys) { (Array.isArray(keys) ? keys : [keys]).forEach(k => delete mem[k]); },
+        async getBytesInUse() { return 0; }
+      },
+      onChanged: { addListener() {} }
+    },
+    runtime: {
+      id: 'test',
+      async sendMessage(msg) { window.__sent.push(msg); return { ok: true }; },
+      onMessage: { addListener() {} }
+    }
+  };
+</script>
+
+<script src="../core/store.js"></script>
+<script src="../core/anchor.js"></script>
+<script src="../core/session.js"></script>
+
+<script>
+(async function () {
+  const lines = [];
+  function check(label, ok, detail) {
+    lines.push((ok ? 'PASS ' : 'FAIL ') + label + (detail ? ' :: ' + detail : ''));
+    document.getElementById('checks').textContent = lines.join('\n');
+  }
+  const tick = (ms) => new Promise(r => setTimeout(r, ms || 50));
+
+  // Wait for the child frames to finish their own async work.
+  await tick(700);
+
+  check('no load-time errors in the top frame',
+    window.__errors.length === 0, window.__errors.join(' | '));
+
+  /* --- the top frame ---------------------------------------------------- */
+  check('top frame knows it is the top', AT.session.IS_TOP === true);
+  check('top frame has an empty frame path',
+    AT.session.FRAME_PATH.length === 0 && AT.session.FRAME_KEY === '',
+    JSON.stringify(AT.session.FRAME_PATH));
+
+  /* --- the child frames -------------------------------------------------- */
+  function readFrame(id) {
+    const frame = document.getElementById(id);
+    try {
+      const out = frame.contentDocument &&
+                  frame.contentDocument.getElementById('out');
+      if (!out || out.textContent === 'pending') return null;
+      return JSON.parse(out.textContent);
+    } catch (e) {
+      return { blocked: String(e.message || e) };
+    }
+  }
+
+  const a = readFrame('f0');
+  const b = readFrame('f1');
+
+  check('first child frame reported back', !!a && !a.error,
+    a ? (a.error || 'ok') : 'no result');
+  check('second child frame reported back', !!b && !b.error,
+    b ? (b.error || 'ok') : 'no result');
+
+  if (a && b) {
+    check('a child frame knows it is NOT the top',
+      a.isTop === false && b.isTop === false);
+
+    // The decisive one: two frames must get DIFFERENT paths, or restore would
+    // put every annotation into whichever frame answered first.
+    check('frames get distinct indices',
+      JSON.stringify(a.framePath) === '[0]' &&
+      JSON.stringify(b.framePath) === '[1]',
+      'f0=' + JSON.stringify(a.framePath) + ' f1=' + JSON.stringify(b.framePath));
+    check('frame keys differ', a.frameKey !== b.frameKey,
+      JSON.stringify([a.frameKey, b.frameKey]));
+
+    /* A subframe cannot read window.top.location cross-origin, so it asks the
+     * service worker. Annotations must file under the TOP page, not the frame. */
+    check('a child frame files under the top page URL, not its own',
+      a.topUrl === 'https://example.com/top-page', a.topUrl);
+    check('the child asked the worker for the page URL',
+      a.sentTypes.indexOf('AT_PAGE_URL') > -1, a.sentTypes.join(','));
+
+    /* The point of the relay: several frames writing the same storage key
+     * would lose each other's annotations. */
+    check('a child frame RELAYS its mutation instead of writing storage',
+      a.relayedOp === 'addAnnotation', a.relayedOp);
+    check('the relay returned the top frame\'s result',
+      a.addResult && a.addResult.relayed === true, JSON.stringify(a.addResult));
+    check('the child wrote nothing to storage itself',
+      a.wroteStorageDirectly === false);
+
+    /* The frame stamp is applied before the relay, in the frame where the
+     * annotation was actually made. */
+    check('the annotation is stamped with its originating frame',
+      a.relayedFrame && JSON.stringify(a.relayedFrame.path) === '[0]',
+      JSON.stringify(a.relayedFrame));
+    check('the second frame stamps its own index',
+      b.relayedFrame && JSON.stringify(b.relayedFrame.path) === '[1]',
+      JSON.stringify(b.relayedFrame));
+
+    /* --- capture from inside a frame ------------------------------------
+     * The toolbar is not built in a subframe, so `bar` is null there. Reading
+     * bar.hidden unguarded threw, and autoCapture swallows its errors - which
+     * is exactly why an annotation made in an iframe silently got no
+     * screenshot at all. */
+    check('a subframe can take a screenshot without throwing',
+      a.capturedFromFrame === true,
+      a.captureError || ('captured=' + a.capturedFromFrame));
+    check('no TypeError from the missing toolbar',
+      !a.captureError || a.captureError.indexOf('null') < 0,
+      a.captureError || 'no error');
+    // Only the top frame can hide the toolbar that would otherwise be in shot.
+    check('a subframe DELEGATES the capture to the top frame',
+      a.delegatedCapture === true);
+    check('a subframe does not photograph the tab itself',
+      a.tookShotItself === false);
+  }
+
+  /* --- a frame we can never reach ---------------------------------------- */
+  {
+    // A sandboxed iframe without allow-scripts runs no script at all, so the
+    // extension can never annotate inside it. The tool has to SAY so rather
+    // than leave the user clicking at something inert.
+    const c = readFrame('f2');
+    check('a sandboxed frame runs nothing, as expected',
+      c === null || !!c.blocked, c ? JSON.stringify(c).slice(0, 60) : 'no result');
+
+    const sandboxed = Array.from(document.querySelectorAll('iframe[sandbox]'))
+      .filter(f => (f.getAttribute('sandbox') || '').indexOf('allow-scripts') < 0);
+    check('unreachable frames are detectable so the user can be told',
+      sandboxed.length === 1, sandboxed.length + ' found');
+  }
+})();
+</script>
+</body>
+</html>

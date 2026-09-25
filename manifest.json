@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "Annotate Tool",
+  "version": "1.15.0",
+  "description": "Annotate any webpage with highlights, sticky notes, text boxes and arrows, capture annotated screenshots, and export the whole review session as a single ZIP ready for a teammate or an AI to act on.",
+  "author": "Mark Van de Velde",
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Annotate Tool"
+  },
+  "options_page": "options/options.html",
+  "permissions": ["storage", "unlimitedStorage", "downloads"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": [
+        "core/store.js",
+        "core/anchor.js",
+        "core/session.js",
+        "core/box-tool.js",
+        "core/unzip.js",
+        "core/live.js",
+        "tools/highlight.js",
+        "tools/note.js",
+        "tools/box.js",
+        "tools/arrow.js",
+        "content/overlay.js",
+        "content/review-mode.js",
+        "content/bridge.js",
+        "content/live-dom.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ]
+}

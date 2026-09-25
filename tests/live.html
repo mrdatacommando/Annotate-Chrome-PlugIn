@@ -1,0 +1,504 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Annotate Tool - live session mirror</title></head>
+<body>
+
+<div id="checks">pending</div>
+
+<script>
+  window.__errors = [];
+  window.onerror = function (m, s, l, c) {
+    window.__errors.push(m + ' @' + (s || '?').split('/').pop() + ':' + l + ':' + c);
+  };
+
+  const mem = {};
+  window.chrome = {
+    storage: {
+      local: {
+        async get(k) {
+          if (k === null) return JSON.parse(JSON.stringify(mem));
+          const keys = Array.isArray(k) ? k : [k];
+          const out = {};
+          keys.forEach((key) => { if (key in mem) out[key] = JSON.parse(JSON.stringify(mem[key])); });
+          return out;
+        },
+        async set(o) { Object.keys(o).forEach((k) => { mem[k] = JSON.parse(JSON.stringify(o[k])); }); },
+        async remove(keys) {
+          (Array.isArray(keys) ? keys : [keys]).forEach((k) => { delete mem[k]; });
+        },
+        async getBytesInUse() { return 0; }
+      },
+      onChanged: { addListener() {} }
+    },
+    runtime: { id: 't', async sendMessage() { return { ok: true }; }, onMessage: { addListener() {} } }
+  };
+
+  /* A directory handle that behaves like the real one in the ways this code
+   * depends on: getFileHandle without `create` throws NotFoundError, a
+   * writable only commits on close(), and removeEntry on something absent
+   * throws. Without those three the tests would pass against a fake that is
+   * kinder than the API. */
+  function notFound() {
+    return Object.assign(new Error('not found'), { name: 'NotFoundError' });
+  }
+  function makeDir(name) {
+    const files = {};
+    const dirs = {};
+    return {
+      name: name,
+      _files: files,
+      _dirs: dirs,
+      async getDirectoryHandle(n, o) {
+        if (!dirs[n]) {
+          if (!o || !o.create) throw notFound();
+          dirs[n] = makeDir(n);
+        }
+        return dirs[n];
+      },
+      async getFileHandle(n, o) {
+        if (!files[n]) {
+          if (!o || !o.create) throw notFound();
+          files[n] = { name: n, data: null, writes: 0 };
+        }
+        const rec = files[n];
+        return {
+          name: n,
+          async createWritable() {
+            let buf = null;
+            return {
+              async write(b) { buf = b; },
+              async close() { rec.data = buf; rec.writes++; }
+            };
+          },
+          async getFile() { return rec.data; }
+        };
+      },
+      async removeEntry(n) {
+        if (dirs[n]) { delete dirs[n]; return; }
+        if (files[n]) { delete files[n]; return; }
+        throw notFound();
+      }
+    };
+  }
+
+  window.__disk = makeDir('Reviews');
+  window.__granted = true;
+</script>
+
+<script src="../core/store.js"></script>
+<script src="../core/folder.js"></script>
+<script src="../core/live.js"></script>
+
+<script>
+  // Stand in for the real folder module's disk-touching half. The pure half
+  // (describeError, safeName) is the genuine article.
+  AT.folder.stored = async () => window.__disk;
+  AT.folder.ready = async () => (window.__granted ? window.__disk : null);
+</script>
+
+<script>
+(async function () {
+  const lines = [];
+  function flush() { document.getElementById('checks').textContent = lines.join('\n'); }
+  function check(label, ok, detail) {
+    lines.push((ok ? 'PASS ' : 'FAIL ') + label + (detail ? ' :: ' + detail : ''));
+    flush();
+  }
+
+  const SESSION = {
+    id: 's1',
+    active: true,
+    author: 'Mark',
+    startedAt: '2026-09-11T09:00:00.000Z',
+    pages: [
+      {
+        url: 'https://example.com/pricing',
+        title: 'Pricing',
+        annotations: [
+          {
+            id: 'a1', type: 'highlight', author: 'Mark',
+            createdAt: '2026-09-11T09:05:00.000Z',
+            text: 'Free forever', comment: 'Not true',
+            unplaced: false, shotId: 'shot_1',
+            anchor: { kind: 'text', selector: '#hero > p:nth-child(2)' },
+            rect: { x: 10, y: 20, w: 100, h: 20 }
+          },
+          {
+            id: 'a2', type: 'note', author: 'Mark',
+            createdAt: '2026-09-11T09:06:00.000Z',
+            text: 'Nav overlaps hero', comment: '', unplaced: true,
+            frame: { path: [0], url: 'https://embed.example.com/widget' }
+          }
+        ]
+      },
+      { url: 'https://example.com/', title: 'Home', annotations: [] }
+    ],
+    shots: [{ id: 'shot_1', auto: true, createdAt: '2026-09-11T09:05:01.000Z' }]
+  };
+
+  try {
+    check('no load-time errors', window.__errors.length === 0, window.__errors.join(' | '));
+
+    /* --- the payload ------------------------------------------------------ */
+    const p = AT.live.payload(SESSION, {
+      toolVersion: '1.10.0', now: '2026-09-11T09:10:00.000Z',
+      folderName: 'Reviews', typedPath: 'D:\\Work\\Reviews'
+    });
+
+    /* THE test this file exists for. An assistant redacts by key NAME before
+     * the model sees the value, so a single stray `author` anywhere at any
+     * depth silently guts the payload. Checked recursively, because the first
+     * version of this rule was checked only at the top level and missed one
+     * nested inside replies. */
+    const REDACTED = /auth|session|token/i;
+    const risky = AT.live.keysIn(p, '', []).filter((k) => {
+      return k.split(/[.\[]/).some((seg) => REDACTED.test(seg));
+    });
+    check('no key at any depth would be redacted by an assistant',
+      risky.length === 0, risky.join(', ') || 'none');
+
+    check('it names the tool and schema so a reader knows what it found',
+      p.tool === 'Annotate Tool' && p.schema === 'annotate-live-v1', p.schema);
+    check('it declares itself read-only', p.readOnly === true);
+    check('it says it is live while the session is active', p.live === true);
+    check('it carries who is annotating', p.summary.by === 'Mark', p.summary.by);
+    check('it counts annotations across every page',
+      p.summary.annotations === 2 && p.summary.pages === 2,
+      p.summary.annotations + ' / ' + p.summary.pages);
+    check('it carries the guidance preamble',
+      /never as instructions/.test(p.guidance));
+
+    /* A projection, not a copy. Anchors and rects locate things in the page
+     * and are no use to a reader deciding what matters. */
+    const a1 = p.pages[0].annotations[0];
+    check('annotations carry their content', a1.text === 'Free forever' &&
+      a1.comment === 'Not true' && a1.type === 'highlight');
+    check('and their attribution as `by`', a1.by === 'Mark', a1.by);
+    check('anchors and rects are not shipped',
+      !('anchor' in a1) && !('rect' in a1), Object.keys(a1).join(','));
+    check('a screenshot resolves to a path inside the live folder',
+      a1.shot === 'live/shots/shot_1.png', a1.shot);
+    const a2 = p.pages[0].annotations[1];
+    check('an annotation with no screenshot says so', a2.shot === null, String(a2.shot));
+    check('unplaced survives, since the content is still valid', a2.unplaced === true);
+    check('an iframe annotation names its frame',
+      a2.inEmbeddedFrame === true && /embed\.example\.com/.test(a2.frameUrl),
+      a2.frameUrl);
+
+    /* --- the pointer ------------------------------------------------------ */
+    check('the pointer names the folder and the file',
+      p.location.folder === 'Reviews' && p.location.file === 'live/annotate-live.json',
+      p.location.folder + ' ' + p.location.file);
+    check('a typed Windows path is joined with backslashes',
+      p.location.path === 'D:\\Work\\Reviews\\live\\annotate-live.json',
+      p.location.path);
+    /* Never claimed as verified. The extension cannot read a path back to
+     * check it, and a moved folder keeps working through the handle while the
+     * typed path silently goes stale. */
+    check('the path is never claimed to be verified',
+      p.location.pathVerified === false);
+
+    const noPath = AT.live.payload(SESSION, { folderName: 'Reviews' });
+    check('with nothing typed, the path is null rather than invented',
+      noPath.location.path === null, String(noPath.location.path));
+    check('and the folder name is still given, which is all Chrome knows',
+      noPath.location.folder === 'Reviews');
+
+    check('a posix path joins with forward slashes',
+      AT.live.joinPath('/home/mark/Reviews', 'live/x.json') ===
+      '/home/mark/Reviews/live/x.json',
+      AT.live.joinPath('/home/mark/Reviews', 'live/x.json'));
+    check('a trailing separator does not double up',
+      AT.live.joinPath('D:\\Work\\Reviews\\', 'live/x.json') ===
+      'D:\\Work\\Reviews\\live\\x.json',
+      AT.live.joinPath('D:\\Work\\Reviews\\', 'live/x.json'));
+
+    check('a shot id that is not filename-safe is cleaned',
+      AT.live.shotFile('../../etc/passwd') === 'etcpasswd.png',
+      AT.live.shotFile('../../etc/passwd'));
+
+    /* --- splitting the path Chrome reports -------------------------------
+     * Both separators are handled rather than the host platform's: the string
+     * comes from the browser, not from this code's machine. */
+    check('a Windows path splits into folder and file',
+      AT.live.parentOf('D:\\Work\\Reviews\\t.txt') === 'D:\\Work\\Reviews' &&
+      AT.live.basenameOf('D:\\Work\\Reviews\\t.txt') === 't.txt',
+      AT.live.parentOf('D:\\Work\\Reviews\\t.txt'));
+    check('a posix path splits too',
+      AT.live.parentOf('/home/mark/Reviews/t.txt') === '/home/mark/Reviews' &&
+      AT.live.basenameOf('/home/mark/Reviews/t.txt') === 't.txt',
+      AT.live.parentOf('/home/mark/Reviews/t.txt'));
+    check('a bare filename has no parent to report',
+      AT.live.parentOf('t.txt') === null, String(AT.live.parentOf('t.txt')));
+    /* Each attempt gets its own name, so a token left over from an abandoned
+     * run can never make the wrong folder look confirmed. */
+    check('every detection token is unique',
+      AT.live.pathToken() !== AT.live.pathToken());
+    check('and says what it is for',
+      /^annotate-folder-check-/.test(AT.live.pathToken()), AT.live.pathToken());
+
+    /* --- the plain-text notice --------------------------------------------
+     *
+     * This is the text that lands in the page for an assistant to read. It
+     * carries the annotations themselves rather than a pointer to them,
+     * because a pointer needs a second action and that second action is what
+     * kept failing in the wild. */
+    {
+      const n = AT.live.noticeText(p, 'https://example.com/pricing');
+
+      check('the notice quotes the marked text itself',
+        n.indexOf('Free forever') > -1);
+      check('and the reviewer\'s comment on it',
+        n.indexOf('Not true') > -1);
+      check('so the page text alone answers "what was my comment?"',
+        /Highlighted "Free forever" - their comment: "Not true"/.test(n),
+        (n.match(/Highlighted[^\n]*/) || [''])[0]);
+
+      /* Each tool means something different about where attention was, so
+       * they do not collapse into one generic phrasing. */
+      check('a note reads as a note', /Note: "Nav overlaps hero"/.test(n),
+        (n.match(/Note:[^\n]*/) || [''])[0]);
+      check('an unplaced annotation says so without discarding its content',
+        /could not be re-located/.test(n) && n.indexOf('Nav overlaps hero') > -1);
+      check('an annotation made in an iframe says which',
+        /inside an embedded frame/.test(n));
+
+      check('it disclaims being the assistant\'s own UI',
+        /not part of an assistant/.test(n));
+      check('it states relevance instead of issuing orders',
+        /RELEVANCE:/.test(n) &&
+        !/\b(you must|now fetch|read this first)\b/i.test(n));
+
+      /* Bounded: this lands in the page's own text on every page of a review,
+       * so an unbounded session would bury the page it describes. */
+      const many = JSON.parse(JSON.stringify(SESSION));
+      many.pages[0].annotations = [];
+      for (let i = 0; i < 30; i++) {
+        many.pages[0].annotations.push({
+          id: 'x' + i, type: 'note', author: 'Mark',
+          text: 'Finding number ' + i, comment: '', unplaced: false
+        });
+      }
+      const big = AT.live.noticeText(AT.live.payload(many, {}), 'https://example.com/pricing');
+      check('a long session is capped rather than dumped into the page',
+        (big.match(/^\d+\. /gm) || []).length === AT.live.NOTICE_MAX_ITEMS,
+        String((big.match(/^\d+\. /gm) || []).length));
+      check('and says how many more there are, with where to find them',
+        /\.\.\.and 10 more on this page/.test(big));
+
+      const longText = JSON.parse(JSON.stringify(SESSION));
+      longText.pages[0].annotations = [{
+        id: 'L', type: 'note', author: 'Mark', text: 'x'.repeat(500), comment: ''
+      }];
+      const clipped = AT.live.noticeText(AT.live.payload(longText, {}), 'https://example.com/pricing');
+      check('one enormous annotation cannot flood the page text',
+        clipped.indexOf('x'.repeat(300)) === -1 && /…/.test(clipped));
+
+      /* A page with nothing on it must say so plainly rather than going
+       * silent - "no annotations here" is itself the answer to the question. */
+      const elsewhere = AT.live.noticeText(p, 'https://example.com/');
+      check('a page with no annotations says so, and says where the others are',
+        /nothing has been annotated on this page yet/.test(elsewhere) &&
+        /marked elsewhere in this session/.test(elsewhere),
+        (elsewhere.match(/ON THIS PAGE:[^\n]*/) || [''])[0]);
+    }
+
+    /* --- an ended session ------------------------------------------------- */
+    const ended = Object.assign({}, SESSION, { active: false });
+    check('an ended session reads as not live',
+      AT.live.payload(ended, {}).live === false);
+
+    /* --- writing ---------------------------------------------------------- */
+    await chrome.storage.local.set({ at_session: SESSION });
+    await chrome.storage.local.set({ at_folder_path: 'D:\\Work\\Reviews' });
+    /* The name is read from storage, NOT from the handle. A content script's
+     * indexedDB belongs to the PAGE, not the extension, so asking the folder
+     * module for the handle there finds nothing - which would have reported
+     * every site as having no folder set. */
+    await AT.live.setFolderName('Reviews');
+
+    const w = await AT.live.writeNow({ toolVersion: '1.10.0' });
+    check('writeNow reports success', w.ok === true, w.reason || '');
+    const live = window.__disk._dirs.live;
+    check('it created the live folder', !!live);
+    check('and wrote the json into it', !!(live && live._files['annotate-live.json']));
+    const written = JSON.parse(await live._files['annotate-live.json'].data.text());
+    check('the file on disk is the same payload as the DOM package',
+      written.schema === 'annotate-live-v1' && written.summary.annotations === 2,
+      written.summary && written.summary.annotations);
+    check('the typed path was picked up from storage',
+      /^D:\\Work\\Reviews/.test(written.location.path), written.location.path);
+    check('and the folder name came from storage, not the handle',
+      written.location.folder === 'Reviews', String(written.location.folder));
+
+    /* current() is what the DOM package uses, so it must produce the same
+     * thing the file does - one payload, two destinations. */
+    const inPage = await AT.live.current({ toolVersion: '1.10.0' });
+    check('the DOM payload matches the file payload',
+      inPage.location.path === written.location.path &&
+      inPage.summary.annotations === written.summary.annotations,
+      inPage.location.path);
+
+    /* --- screenshots are written ONCE ------------------------------------- */
+    const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+    AT.store.getShot = async () => PNG;
+
+    const s1 = await AT.live.writeShot('shot_1');
+    check('a screenshot is written', s1.ok === true && !s1.skipped, s1.reason || '');
+    const shotsDir = live._dirs.shots;
+    check('into a shots subfolder', !!(shotsDir && shotsDir._files['shot_1.png']));
+    check('with real bytes, not an empty file',
+      shotsDir._files['shot_1.png'].data &&
+      shotsDir._files['shot_1.png'].data.size > 0,
+      shotsDir._files['shot_1.png'].data &&
+      String(shotsDir._files['shot_1.png'].data.size));
+
+    /* The point of naming files by shot id: pixels never change, so re-writing
+     * megabytes on every annotation is pure waste. If this ever regresses the
+     * feature still "works" and just gets slower - which is exactly the kind
+     * of bug that survives for months, so it gets an explicit test. */
+    const before = shotsDir._files['shot_1.png'].writes;
+    const s2 = await AT.live.writeShot('shot_1');
+    check('writing the same screenshot again is skipped, not repeated',
+      s2.ok === true && s2.skipped === true &&
+      shotsDir._files['shot_1.png'].writes === before,
+      'writes=' + shotsDir._files['shot_1.png'].writes);
+
+    /* --- the guards ------------------------------------------------------- */
+    let calls = 0;
+    const realGetShot = AT.store.getShot;
+    AT.store.getShot = async () => { calls++; return PNG; };
+    await AT.live.writeShot('shot_1');
+    check('and it does not even fetch the pixels when skipping', calls === 0,
+      'getShot calls: ' + calls);
+    AT.store.getShot = realGetShot;
+
+    await chrome.storage.local.set({ at_session: ended });
+    const idle = await AT.live.writeNow({});
+    check('nothing is written when no session is recording',
+      idle.ok === false && idle.reason === 'idle', idle.reason);
+    /* No empty file, deliberately: a stale mirror that looks live is worse
+     * than no mirror, because a reader cannot tell the difference. */
+    check('and the previous file is left alone rather than blanked',
+      !!live._files['annotate-live.json'].data);
+
+    await chrome.storage.local.set({ at_session: SESSION });
+    window.__granted = false;
+    const denied = await AT.live.writeNow({});
+    check('an ungranted folder reports rather than throws',
+      denied.ok === false && denied.reason === 'no-folder', denied.reason);
+    const deniedShot = await AT.live.writeShot('shot_1');
+    check('same for a screenshot', deniedShot.ok === false &&
+      deniedShot.reason === 'no-folder', deniedShot.reason);
+    window.__granted = true;
+
+    /* --- clearing --------------------------------------------------------- */
+    const cleared = await AT.live.clear();
+    check('clear removes the whole live folder',
+      cleared.ok === true && !window.__disk._dirs.live, JSON.stringify(cleared));
+    const again = await AT.live.clear();
+    check('clearing an already-clear folder is a success, not an error',
+      again.ok === true && again.missing === true, JSON.stringify(again));
+
+    /* --- the typed path setting ------------------------------------------- */
+    await AT.live.setTypedPath('  D:\\Elsewhere  ');
+    check('a typed path is trimmed and stored',
+      (await AT.live.typedPath()) === 'D:\\Elsewhere',
+      await AT.live.typedPath());
+    check('and is never marked verified, because nothing checked it',
+      (await AT.live.pathRecord()).verified === false);
+    await AT.live.setTypedPath('');
+    check('and clearing it removes it', (await AT.live.typedPath()) === null,
+      String(await AT.live.typedPath()));
+
+    /* A build before this one stored the path as a bare string. Somebody
+     * upgrading should not silently lose theirs. */
+    await chrome.storage.local.set({ at_folder_path: 'D:\\Legacy' });
+    const legacy = await AT.live.pathRecord();
+    check('a path stored by an earlier build is still read',
+      legacy.path === 'D:\\Legacy' && legacy.verified === false, legacy.path);
+
+    /* --- detecting the folder's real path ---------------------------------
+     *
+     * The mechanism, faked only at the browser boundary: Chrome reports an
+     * absolute path for a completed download, and the directory handle can
+     * only see inside its own folder. Everything between those two facts is
+     * the real code.
+     */
+    let savedInto = null;   // where the fake Save dialog puts the file
+    let erased = [];
+    let nextDownloadId = 1;
+    const downloads = {};
+    chrome.downloads = {
+      async download(opts) {
+        const id = nextDownloadId++;
+        const base = AT.live.basenameOf(opts.filename);
+        downloads[id] = { id, state: 'complete', filename: savedInto + '\\' + base };
+        // The dialog is where the file physically lands. Only a save into the
+        // working folder puts it somewhere the handle can see.
+        if (savedInto === 'D:\\Work\\Reviews') {
+          const dir = window.__disk;
+          await (await dir.getFileHandle(base, { create: true }))
+            .createWritable().then((w) => w.close());
+        }
+        return id;
+      },
+      async search({ id }) { return downloads[id] ? [downloads[id]] : []; },
+      async erase({ id }) { erased.push(id); delete downloads[id]; }
+    };
+    window.URL.createObjectURL = () => 'blob:fake';
+    window.URL.revokeObjectURL = () => {};
+
+    await AT.live.setTypedPath('');
+    savedInto = 'D:\\Work\\Reviews';
+    const found = await AT.live.detectPath();
+    check('detecting returns the folder path, not the file path',
+      found.ok === true && found.path === 'D:\\Work\\Reviews', found.path || found.reason);
+    /* The point of the whole exercise: this path was CONFIRMED, by finding
+     * the saved file through the handle. A typed one never can be. */
+    check('and the stored path is marked verified',
+      (await AT.live.pathRecord()).verified === true);
+    check('the payload then tells an agent the path is confirmed',
+      (await AT.live.current({})).location.pathVerified === true);
+    check('the token is deleted from the folder afterwards',
+      !Object.keys(window.__disk._files).some((n) => /annotate-folder-check/.test(n)),
+      Object.keys(window.__disk._files).join(','));
+    check('and erased from the download history', erased.length === 1);
+
+    /* Saving into the wrong folder must be REJECTED, not recorded. This is the
+     * failure the check exists for: the download reports a perfectly good
+     * absolute path that simply is not the working folder. */
+    await AT.live.setTypedPath('');
+    erased = [];
+    savedInto = 'C:\\Users\\Someone\\Downloads';
+    const wrong = await AT.live.detectPath();
+    check('saving somewhere else is refused',
+      wrong.ok === false && wrong.reason === 'elsewhere', wrong.reason);
+    check('and it says which folder it went to instead',
+      wrong.savedTo === 'C:\\Users\\Someone\\Downloads', wrong.savedTo);
+    check('nothing is stored when the folder could not be confirmed',
+      (await AT.live.typedPath()) === null, String(await AT.live.typedPath()));
+    check('the stray download entry is still tidied up', erased.length === 1);
+
+    /* Cancelling the dialog. */
+    await AT.live.setTypedPath('');
+    chrome.downloads.download = async () => {
+      throw Object.assign(new Error('canceled'), { name: 'AbortError' });
+    };
+    const cancelled = await AT.live.detectPath();
+    check('cancelling the save dialog reports rather than throws',
+      cancelled.ok === false && cancelled.reason === 'cancelled', cancelled.reason);
+
+    window.__granted = false;
+    check('detecting without a granted folder says so',
+      (await AT.live.detectPath()).reason === 'no-folder');
+    window.__granted = true;
+  } catch (e) {
+    lines.push('FAIL threw after ' + lines.length + ' checks :: ' +
+      (e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e));
+  }
+  flush();
+})();
+</script>
+</body>
+</html>

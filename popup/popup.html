@@ -1,0 +1,64 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Annotate Tool</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    width: 268px; margin: 0; padding: 14px;
+    font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: #1c1f26; color: #f2f4f8;
+  }
+  h1 { margin: 0 0 2px; font-size: 14px; }
+  .sub { margin: 0 0 12px; opacity: .6; font-size: 12px; }
+  .stat {
+    display: flex; justify-content: space-between;
+    padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,.09);
+  }
+  .stat:last-of-type { border-bottom: 0; }
+  .stat b { font-variant-numeric: tabular-nums; }
+  .box {
+    margin: 10px 0; padding: 9px 10px; border-radius: 8px;
+    background: rgba(255,255,255,.06); font-size: 12px;
+  }
+  button {
+    width: 100%; margin-top: 8px; padding: 9px;
+    border: 0; border-radius: 8px;
+    font: inherit; font-weight: 600; cursor: pointer;
+    background: rgba(255,255,255,.11); color: inherit;
+  }
+  button:hover { background: rgba(255,255,255,.18); }
+  button.go { background: #2f6f4f; color: #fff; }
+  button.go:hover { background: #3a8a62; }
+  button.stop { background: #3b82f6; color: #fff; }
+  button.stop:hover { background: #4d90f5; }
+  button.quiet { font-weight: 400; opacity: .75; }
+  .warn { color: #ffb37a; }
+  label { display: block; font-size: 11px; opacity: .7; margin-bottom: 4px; }
+  input[type=text] {
+    width: 100%; padding: 7px 9px; border-radius: 7px;
+    border: 1px solid rgba(255,255,255,.18);
+    background: #12151b; color: inherit; font: inherit; font-size: 13px;
+  }
+  input[type=text]:focus { outline: 2px solid #3b82f6; outline-offset: -1px; }
+  .bridgehead { font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+                opacity: .6; font-weight: 700; margin-bottom: 5px; }
+  .bridgenote { font-size: 12px; opacity: .8; line-height: 1.4; margin-bottom: 8px;
+                overflow-wrap: anywhere; }
+  button.blue { background: #3b82f6; color: #fff; }
+</style>
+</head>
+<body>
+  <h1>Annotate Tool</h1>
+  <p class="sub" id="sub">Checking…</p>
+  <div id="body"></div>
+
+  <!-- core/session.js is reused here rather than reimplemented: start(), end()
+       and counts() never touch the page's location or title, so they work
+       unchanged in an extension page. -->
+  <script src="../core/store.js"></script>
+  <script src="../core/session.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
