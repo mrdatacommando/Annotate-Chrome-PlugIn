@@ -184,6 +184,7 @@
    */
   let mineIds = new Set();   // annotation ids that came from the reviewer
   let minePages = new Set(); // page urls that exist ONLY because of those
+  let stray = false;         // a session running that belongs to no bundle here
 
   async function mergeAdditions() {
     if (!bundle) return;
@@ -206,6 +207,7 @@
     } catch (_) {
       session = null;
     }
+    stray = !!(session && session.active && session.reviewOf !== bundle.name);
     if (session && session.reviewOf === bundle.name) {
       for (const sp of session.pages || []) {
         const anns = sp.annotations || [];
@@ -1190,6 +1192,30 @@
     const done = bundle.items.filter((i) => i.ann.review.status !== 'open').length;
 
     app.replaceChildren();
+
+    if (stray) {
+      /* A session running that is not attached to this bundle. Its
+       * annotations never reach this page and the toolbar offers to export
+       * them separately, which is almost never what somebody mid-review
+       * wanted - and it is invisible unless we say so. */
+      const warn = el('div', 'straybar');
+      warn.appendChild(el('span', null,
+        'A session is running that is not part of this bundle. What it ' +
+        'records will export on its own rather than coming back with your ' +
+        'replies.'));
+      /* Written through the store rather than AT.session: that module is a
+       * content-script one, and loading it into this page to set one field
+       * would drag its frame and messaging setup along with it. */
+      warn.appendChild(button('Attach to this bundle', 'go', async () => {
+        const session = await AT.store.getSession();
+        if (!session) return;
+        session.reviewOf = bundle.name;
+        await AT.store.setSession(session);
+        await refreshMine();
+      }));
+      app.appendChild(warn);
+    }
+
     const shell = el('div', 'shell');
     shell.appendChild(renderRail());
 

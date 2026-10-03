@@ -255,6 +255,23 @@
       }
     },
 
+    /* Attaches a session that was started on its own to the bundle being
+     * reviewed. Without it, a session begun from the popup while a bundle is
+     * open records annotations that nobody asked to export separately - they
+     * sit outside the reply, invisible to the review page, and the toolbar
+     * offers to export them as a bundle of their own. Rather than make the
+     * reviewer throw that work away and start again, it can simply be pointed
+     * at the right place. */
+    async attachToReview(bundleName) {
+      return enqueue(async () => {
+        const session = await AT.store.getSession();
+        if (!session) return null;
+        session.reviewOf = bundleName || null;
+        await AT.store.setSession(session);
+        return session;
+      });
+    },
+
     /* Returns the session, or NULL when it refused to start. Null rather than
      * a throw because being blocked is an ordinary answer here, not a fault -
      * the popup disables the button and says why, and this is the backstop

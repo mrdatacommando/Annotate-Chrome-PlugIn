@@ -10,7 +10,7 @@ everything together.
 ## Download
 
 **Just want to use it?** Grab
-[`annotate-tool-v1.19.0.zip`](releases/annotate-tool-v1.19.0.zip) from the
+[`annotate-tool-v1.20.0.zip`](releases/annotate-tool-v1.20.0.zip) from the
 `releases/` folder, or from the [latest release](../../releases/latest) page,
 then follow **Install** below. Nothing else in this repository is needed to run
 the extension — the source is here for people who want to read or change it.
@@ -20,7 +20,7 @@ the extension — the source is here for people who want to read or change it.
 Chrome blocks side-loaded `.crx` files outside the Web Store, so **Load
 unpacked** is the only reliable install path.
 
-1. Unzip `annotate-tool-v1.19.0.zip` somewhere permanent (Chrome reads the folder on
+1. Unzip `annotate-tool-v1.20.0.zip` somewhere permanent (Chrome reads the folder on
    every launch — if you delete it, the extension disappears).
 2. Open `chrome://extensions`.
 3. Turn on **Developer mode** (top right).
@@ -253,11 +253,24 @@ its own.
 
 **Every finding on the page appears while you are adding**, not just the one
 you were stepped to — you cannot sensibly mark a page up without seeing what
-has already been raised on it. Theirs stay read-only. Click one and it becomes
-the current item with the discussion open, ready to reply. (An armed tool
-wins: with Highlight armed, clicking makes a highlight of your own. Press
-`Esc` first to select one of theirs.) Step through normally and it goes back
-to one at a time.
+has already been raised on it. Theirs stay read-only. Click any of them,
+including the one you are already on, and it becomes the current item with the
+discussion open, ready to reply. (An armed tool wins: with Highlight armed,
+clicking makes a highlight of your own. Press `Esc` first to select one of
+theirs.) Step through normally and it goes back to one at a time.
+
+**Your own additions join the walkthrough**, so `←` `→` move through theirs
+and yours together. The bar marks yours as *not yet in the bundle* and offers
+**Edit** and **Delete** in place of the discussion — there is no conversation
+to have with yourself, and fixing a mistake should not mean going back to the
+review page. They are editable and deletable there too, right up until you
+export.
+
+If you started a session from the popup rather than from the walkthrough, it
+is **not** part of the bundle: its annotations never reach the review page and
+the toolbar offers to export them on their own. Both the walkthrough bar and
+the review page now say so and offer **Attach to this bundle**, so the work
+can be pointed at the right place instead of thrown away.
 
 What you mark is merged into the review list beside the findings you were
 sent, badged **yours**, and goes back inside your reply when you **Export
@@ -466,7 +479,7 @@ chrome.exe --headless --disable-gpu --allow-file-access-from-files \
 | `roundtrip.html` | Export → read → review → re-export, and v1 compatibility |
 | `integration.html` | Full stack: create, capture, reload-restore, unplaced, region highlights, popover saves, arrow geometry |
 
-724 checks at time of writing.
+744 checks at time of writing.
 
 **Not covered by the harnesses**, because they need a real extension context:
 `tabs.captureVisibleTab`, `chrome.downloads`, and cross-tab session sync. Those

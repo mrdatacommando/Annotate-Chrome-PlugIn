@@ -127,6 +127,11 @@
   .badge.warn { background: var(--warnbg); color: var(--warn); }
   .badge.done { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); }
   /* Your own additions, told apart from the findings you were sent. */
+  .straybar {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    margin: 0 0 14px; padding: 10px 14px; border-radius: 10px;
+    background: var(--warnbg); color: var(--warn); font-size: 13px;
+  }
   .badge.mine { background: color-mix(in srgb, #7a5cff 24%, transparent); color: #8f78ff; }
   .rail .row .mine { color: #8f78ff; font-size: 11px; margin-left: 4px; }
   .mine-actions { display: flex; gap: 8px; margin: 2px 0 10px; }

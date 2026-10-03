@@ -320,6 +320,120 @@
       AT.overlay.armTool(null);
     }
 
+    /* --- 4d. clicking the one you are already on ------------------------- */
+    {
+      /* It used to keep the TOOL's own click handling, which offers Delete on
+       * an annotation that is not the reviewer's to delete. */
+      AT.reviewMode._goTo(0);
+      await tick(200);
+      /* Collapsed first, or the assertion below is already true before the
+       * click and proves nothing - which is exactly what it did on the first
+       * attempt: it passed with the fix reverted. */
+      if (btn('Hide')) { btn('Hide').click(); await tick(150); }
+      check('the discussion starts closed', AT.reviewMode._expanded() === false);
+
+      const current = AT.overlay.layer.querySelector('[data-at-id="a1"]');
+      current.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      await tick(250);
+      check('clicking the finding you are already on opens the discussion',
+        AT.reviewMode._expanded() === true, String(AT.reviewMode._expanded()));
+
+      /* The tool's own editor - the one offering Delete on an annotation that
+       * is not the reviewer's to delete - opens as a popover in the overlay's
+       * shadow root. That is the surface to check, not the bar. */
+      const pop = AT.overlay.shadow.querySelector('.pop');
+      check('and the tool editor does NOT open over somebody else\'s finding',
+        pop === null, pop ? pop.textContent : '');
+    }
+
+    /* --- 4e. your own additions in the bar -------------------------------- */
+    {
+      const s = await AT.store.getSession();
+      s.pages = [{
+        url: location.href, title: 'Test page',
+        annotations: [{
+          id: 'm1', type: 'note', color: '#ff8a3d', author: 'Sam',
+          text: 'My own note', comment: '', unplaced: false,
+          createdAt: '2026-10-03T12:00:00.000Z',
+          anchor: { kind: 'point', selector: 'body', offset: { x: 5, y: 5 } }
+        }]
+      }];
+      await AT.store.setSession(s);
+      await tick(300);
+
+      check('your addition joins the walkthrough list',
+        AT.reviewMode._items().length === 4,
+        String(AT.reviewMode._items().length));
+
+      AT.reviewMode._goTo(3);
+      await tick(250);
+      const hud = () => AT.reviewMode._shadow().querySelector('.hud').textContent;
+      /* The previous block left the pane open, so the toggle reads "Hide". */
+      if (btn('Hide')) { btn('Hide').click(); await tick(150); }
+      check('the bar says the current one is yours, and not yet in the bundle',
+        hud().indexOf('not yet in the bundle') > -1, JSON.stringify(hud()));
+      check('and offers Edit and Delete rather than a discussion',
+        hud().indexOf('Edit') > -1 && hud().indexOf('Delete') > -1 &&
+        hud().indexOf('Details') === -1, JSON.stringify(hud()));
+
+      // Edit it from here rather than going back to the review page.
+      btn('Edit').click();
+      await tick(150);
+      const ta = AT.reviewMode._shadow().querySelector('.pane textarea');
+      check('Edit opens what you wrote', ta && ta.value === 'My own note',
+        ta ? ta.value : 'no field');
+      ta.value = 'My own note, reworded';
+      btn('Save').click();
+      await tick(300);
+      const after = await AT.store.getSession();
+      check('saving writes it back to your session',
+        after.pages[0].annotations[0].text === 'My own note, reworded',
+        after.pages[0].annotations[0].text);
+
+      // And delete it, in case it was a mistake.
+      AT.reviewMode._goTo(3);
+      await tick(200);
+      btn('Delete').click();
+      await tick(100);
+      check('one click arms rather than deleting',
+        (await AT.store.getSession()).pages[0].annotations.length === 1);
+      btn('Really delete?').click();
+      await tick(300);
+      const gone = await AT.store.getSession();
+      check('the second click removes it',
+        (gone.pages[0].annotations || []).length === 0,
+        JSON.stringify((gone.pages[0].annotations || []).map((a) => a.id)));
+      check('and it leaves the walkthrough list',
+        AT.reviewMode._items().length === 3,
+        String(AT.reviewMode._items().length));
+    }
+
+    /* --- 4f. a session that belongs to no bundle -------------------------- */
+    {
+      /* Started from the popup rather than from here: its annotations never
+       * reach the review page and the toolbar offers to export them on their
+       * own, which is almost never what somebody mid-review wanted. */
+      const s = await AT.store.getSession();
+      s.reviewOf = null;
+      await AT.store.setSession(s);
+      await tick(300);
+
+      const hud = AT.reviewMode._shadow().querySelector('.hud').textContent;
+      check('the bar warns that a separate session is running',
+        hud.indexOf('separate session running') > -1, JSON.stringify(hud));
+      check('and offers to attach it to this bundle',
+        !!btn('Attach to this bundle'));
+
+      btn('Attach to this bundle').click();
+      await tick(300);
+      const fixed = await AT.store.getSession();
+      check('attaching points it at the bundle being reviewed',
+        fixed.reviewOf === 'theirs.zip', String(fixed.reviewOf));
+      check('and the warning goes away',
+        AT.reviewMode._shadow().querySelector('.hud')
+          .textContent.indexOf('separate session running') === -1);
+    }
+
     /* --- 5. closing ------------------------------------------------------ */
     btn('Dismiss').click();
     await tick(80);

@@ -237,6 +237,35 @@
         Array.from(entries.keys()).join(' | '));
     }
 
+    /* --- undoing a mistake before the reply goes out ------------------- */
+    {
+      /* Back onto the addition - the export checks above left the pane
+       * showing one of theirs. */
+      Array.from(document.querySelectorAll('.rail .row'))
+        .find((r) => r.textContent.indexOf('The annual toggle') > -1).click();
+      await tick(150);
+
+      /* Delete has to work too - the whole point is being able to undo a
+       * mistake before the reply goes out. */
+      const del = Array.from(document.querySelectorAll('.mine-actions button'))
+        .find((b) => b.textContent === 'Delete');
+      check('your own entry offers Delete', !!del);
+      del.click();
+      await tick(80);
+      check('one click arms rather than deleting',
+        !!mem.at_session.pages[0].annotations.find((a) => a.id === 'mine1'),
+        del.textContent);
+      del.click();
+      await tick(250);
+      check('the second click removes it from the session',
+        !mem.at_session.pages[0].annotations.find((a) => a.id === 'mine1'));
+      check('and it is off the review list',
+        app.textContent.indexOf('The annual toggle') === -1,
+        JSON.stringify(app.textContent.slice(0, 120)));
+      check('its screenshot went with it',
+        !(mem.at_session.shots || []).some((s) => s.id === 'sh_mine'));
+    }
+
     /* Closing from here must still work, or the reviewer is stuck the other
      * way round - holding a bundle they cannot put down. */
     const close = Array.from(document.querySelectorAll('button'))

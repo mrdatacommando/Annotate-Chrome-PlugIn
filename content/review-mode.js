@@ -40,6 +40,12 @@
   /* Whether a review-scoped session is running: the reviewer is adding
    * findings of their own, not just replying to somebody else's. */
   let annotating = false;
+  /* How many of `items` came from the bundle itself; anything past this is
+   * the reviewer's own, appended by loadMine(). */
+  let bundleCount = 0;
+  let mineIds = new Set();
+  /* A session running that is NOT attached to this bundle. */
+  let stray = false;
 
   const CSS = `
 :host { all: initial; }
@@ -272,6 +278,7 @@
     if (!item || !samePage(item.pageUrl, location.href)) return;
     const ok = place(item.ann);
     render(ok);
+    if (ok) bindReviewClick(item.ann.id, index);
   }
 
   /* Their findings are read-only here.
@@ -306,7 +313,11 @@
         e.preventDefault();
         e.stopImmediatePropagation();
         expanded = true;
-        goTo(i);
+        /* Already the current one: there is nothing to step to, just open the
+         * discussion. goTo returns early for its own index, so without this
+         * clicking the finding you are already on would do nothing at all. */
+        if (i === index) render(lastPlaced);
+        else goTo(i);
       }, true);
     });
   }
@@ -330,8 +341,36 @@
   /* --- stepping ----------------------------------------------------------- */
 
   async function saveLive() {
-    live.index = index;
+    /* Clamped to the bundle's own items. The reviewer's additions are appended
+     * to the end of the list here, but the review page builds its own order by
+     * page - so an index past the bundle's count would land "Back to list" on
+     * something arbitrary. The bundle items are the shared frame of reference;
+     * the additions are not. */
+    live.index = Math.min(index, Math.max(0, bundleCount - 1));
     await chrome.storage.local.set({ [LIVE_KEY]: live });
+  }
+
+  /* The reviewer's own additions, appended to the walkthrough list so the
+   * arrows step through theirs and yours together. Rebuilt rather than
+   * appended to, so an edit or a deletion made anywhere shows up here. */
+  async function loadMine() {
+    items = items.slice(0, bundleCount);
+    mineIds = new Set();
+    let session = null;
+    try {
+      session = await AT.store.getSession();
+    } catch (_) {
+      return;
+    }
+    if (!session || !session.reviewOf) return;
+    if (live && live.bundleName && session.reviewOf !== live.bundleName) return;
+    (session.pages || []).forEach((p) => {
+      (p.annotations || []).forEach((a) => {
+        items.push({ ann: a, pageUrl: p.url, pageTitle: p.title, mine: true });
+        mineIds.add(a.id);
+      });
+    });
+    if (index >= items.length) index = Math.max(0, items.length - 1);
   }
 
   async function goTo(next) {
@@ -347,6 +386,10 @@
       const ok = place(target.ann);
       if (ok) scrollTo(target.ann);
       render(ok);
+      /* The one being stepped to needs the same treatment as the rest: left
+       * unbound it keeps the TOOL's editor, which offers Delete on an
+       * annotation that is not the reviewer's to delete. */
+      if (ok) bindReviewClick(target.ann.id, index);
       /* clearDrawn() took the rest of the page with it. */
       placeOthers();
     } else {
@@ -405,10 +448,53 @@
 
   /* --- the HUD ------------------------------------------------------------ */
 
+  function renderMinePane(pane, ann) {
+    pane.appendChild(el('h3', null, 'Your annotation'));
+    pane.appendChild(el('p', 'by',
+      (ann.type || 'annotation') + ' · not yet in the bundle'));
+
+    /* The same rule the review and export pages use: edit what the user
+     * wrote. On a highlight that is the comment, because its text is quoted
+     * FROM the page. */
+    const field = ann.type === 'highlight' ? 'comment' : 'text';
+    if (field === 'comment' && ann.text) {
+      const said = el('div', 'said');
+      said.appendChild(el('span', 'lbl', 'Highlighted'));
+      said.appendChild(document.createTextNode(ann.text));
+      pane.appendChild(said);
+    }
+
+    const ta = document.createElement('textarea');
+    ta.value = ann[field] || '';
+    ta.rows = 3;
+    ta.placeholder = field === 'comment' ? 'Your comment' : 'What you noticed';
+    pane.appendChild(ta);
+
+    const row = el('div', 'actions');
+    const save = el('button', 'btn primary', 'Save');
+    save.type = 'button';
+    save.addEventListener('click', async () => {
+      save.disabled = true;
+      ann[field] = ta.value.trim();
+      await AT.session.updateAnnotation(ann.id, { [field]: ann[field] });
+      /* The storage change reloads the list and re-renders; this just closes
+       * the pane so the save reads as finished. */
+      expanded = false;
+    });
+    row.appendChild(save);
+    pane.appendChild(row);
+    return pane;
+  }
+
   function renderPane(ann) {
     const pane = el('div', 'pane');
     pane.hidden = !expanded;
     if (!expanded) return pane;
+
+    /* Your own addition. There is no discussion to have with yourself, and the
+     * useful thing to do with it here is fix what you wrote - so the pane
+     * edits rather than replies. */
+    if (mineIds.has(ann.id)) return renderMinePane(pane, ann);
 
     pane.appendChild(el('h3', null, ann.text || '(no text captured)'));
     pane.appendChild(el('p', 'by',
@@ -517,15 +603,56 @@
     }
 
     const replies = (ann.review && ann.review.replies) || [];
-    const details = el('button', 'btn',
-      (expanded ? 'Hide' : 'Details') + (replies.length ? ' (' + replies.length + ')' : ''));
-    details.type = 'button';
-    details.title = 'See the discussion and add a reply';
-    details.addEventListener('click', () => {
-      expanded = !expanded;
-      render(placed);
-    });
-    hud.appendChild(details);
+    const mine = mineIds.has(ann.id);
+
+    if (mine) {
+      /* Which side of the bundle you are looking at, said plainly. Yours is
+       * not in the bundle yet - it goes in when the reply is exported - and
+       * until then it is the one thing here you can change or remove. */
+      const tag = el('span', 'warn', 'yours · not yet in the bundle');
+      tag.title =
+        'You added this during the review. It is part of your reply once you ' +
+        'export, and until then you can edit or delete it.';
+      hud.appendChild(tag);
+
+      const edit = el('button', 'btn', expanded ? 'Hide' : 'Edit');
+      edit.type = 'button';
+      edit.title = 'Change what you wrote';
+      edit.addEventListener('click', () => {
+        expanded = !expanded;
+        render(placed);
+      });
+      hud.appendChild(edit);
+
+      const del = el('button', 'btn', 'Delete');
+      del.type = 'button';
+      del.title = 'Remove this annotation of yours';
+      del.addEventListener('click', async () => {
+        if (del.dataset.armed !== '1') {
+          del.dataset.armed = '1';
+          del.textContent = 'Really delete?';
+          setTimeout(() => {
+            if (!del.isConnected) return;
+            delete del.dataset.armed;
+            del.textContent = 'Delete';
+          }, 4000);
+          return;
+        }
+        del.disabled = true;
+        await AT.session.removeAnnotation(ann.id);
+      });
+      hud.appendChild(del);
+    } else {
+      const details = el('button', 'btn',
+        (expanded ? 'Hide' : 'Details') + (replies.length ? ' (' + replies.length + ')' : ''));
+      details.type = 'button';
+      details.title = 'See the discussion and add a reply';
+      details.addEventListener('click', () => {
+        expanded = !expanded;
+        render(placed);
+      });
+      hud.appendChild(details);
+    }
 
     /* Add findings of your own while you are here.
      *
@@ -535,7 +662,30 @@
      * blocks. Starting it FROM here attaches it to this bundle instead, so
      * the tools, the screenshots and the restore-after-reload all work as
      * they normally do, and what you mark comes back inside the reply. */
-    if (!annotating) {
+    if (stray) {
+      /* A session running that has nothing to do with this bundle. Its
+       * annotations are invisible to the review page and the toolbar offers to
+       * export them as a bundle of their own - which is almost never what
+       * somebody mid-review wanted. Say so, and offer to point it at the right
+       * place rather than make them throw the work away. */
+      const warn = el('span', 'warn', 'separate session running');
+      warn.title =
+        'A session is running that is not part of this bundle. What it ' +
+        'records will export on its own rather than going back with your ' +
+        'replies.';
+      hud.appendChild(warn);
+
+      const attach = el('button', 'btn', 'Attach to this bundle');
+      attach.type = 'button';
+      attach.title =
+        'Make that session part of this review, so what it recorded goes back ' +
+        'with your replies.';
+      attach.addEventListener('click', async () => {
+        attach.disabled = true;
+        await AT.session.attachToReview((live && live.bundleName) || null);
+      });
+      hud.appendChild(attach);
+    } else if (!annotating) {
       const add = el('button', 'btn', 'Add annotations');
       add.type = 'button';
       add.title = identityName
@@ -559,7 +709,7 @@
       });
       hud.appendChild(add);
     } else {
-      const mine = el('span', 'warn', 'adding your own — use the toolbar');
+      const mine = el('span', 'warn', 'adding annotations — use the toolbar');
       mine.title =
         'The annotation toolbar is live on this page. What you mark is ' +
         'attached to this bundle and comes back with your replies.';
@@ -618,6 +768,7 @@
       ? live.items
       : (live.annotation ? [{ ann: live.annotation, pageUrl: live.pageUrl }] : []);
     if (!items.length) return;
+    bundleCount = items.length;
 
     index = Math.min(Math.max(0, live.index | 0), items.length - 1);
 
@@ -634,9 +785,12 @@
     try {
       const open = await AT.store.getSession();
       annotating = !!(open && open.active && open.reviewOf);
+      stray = !!(open && open.active && !open.reviewOf);
     } catch (_) {
       annotating = false;
+      stray = false;
     }
+    await loadMine();
 
     /* The session can also be ended from the popup or the review page while
      * this HUD is on screen, in which case the bar has to go back to offering
@@ -645,12 +799,19 @@
       if (area !== 'local' || !changes[AT.store.SESSION_KEY]) return;
       const next = changes[AT.store.SESSION_KEY].newValue;
       const now = !!(next && next.active && next.reviewOf);
-      if (now === annotating) return;
-      annotating = now;
-      if (!host) return;
-      render(lastPlaced);
-      if (now) placeOthers();
-      else clearOthers();
+      stray = !!(next && next.active && !next.reviewOf);
+      /* The list is reloaded whatever changed, not only when the mode flips:
+       * marking something, editing it or deleting it all land here, and the
+       * bar is showing that list. */
+      loadMine().then(() => {
+        const flipped = now !== annotating;
+        annotating = now;
+        if (!host) return;
+        render(lastPlaced);
+        if (!flipped) return;
+        if (now) placeOthers();
+        else clearOthers();
+      });
     });
 
     syncToPage();
@@ -694,6 +855,7 @@
       const ok = place(now.ann);
       if (ok) scrollTo(now.ann);
       render(ok);
+      if (ok) bindReviewClick(now.ann.id, index);
       placeOthers();
     }, 250);
   }
