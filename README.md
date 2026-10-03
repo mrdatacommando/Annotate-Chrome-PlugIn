@@ -10,7 +10,7 @@ everything together.
 ## Download
 
 **Just want to use it?** Grab
-[`annotate-tool-v1.20.0.zip`](releases/annotate-tool-v1.20.0.zip) from the
+[`annotate-tool-v1.21.0.zip`](releases/annotate-tool-v1.21.0.zip) from the
 `releases/` folder, or from the [latest release](../../releases/latest) page,
 then follow **Install** below. Nothing else in this repository is needed to run
 the extension — the source is here for people who want to read or change it.
@@ -20,7 +20,7 @@ the extension — the source is here for people who want to read or change it.
 Chrome blocks side-loaded `.crx` files outside the Web Store, so **Load
 unpacked** is the only reliable install path.
 
-1. Unzip `annotate-tool-v1.20.0.zip` somewhere permanent (Chrome reads the folder on
+1. Unzip `annotate-tool-v1.21.0.zip` somewhere permanent (Chrome reads the folder on
    every launch — if you delete it, the extension disappears).
 2. Open `chrome://extensions`.
 3. Turn on **Developer mode** (top right).
@@ -479,7 +479,7 @@ chrome.exe --headless --disable-gpu --allow-file-access-from-files \
 | `roundtrip.html` | Export → read → review → re-export, and v1 compatibility |
 | `integration.html` | Full stack: create, capture, reload-restore, unplaced, region highlights, popover saves, arrow geometry |
 
-744 checks at time of writing.
+748 checks at time of writing.
 
 **Not covered by the harnesses**, because they need a real extension context:
 `tabs.captureVisibleTab`, `chrome.downloads`, and cross-tab session sync. Those
