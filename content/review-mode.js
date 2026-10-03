@@ -487,11 +487,6 @@
     if (!items.length) return;
 
     index = Math.min(Math.max(0, live.index | 0), items.length - 1);
-    const item = items[index];
-
-    // Only act on the page this item belongs to. Without it every tab opened
-    // afterwards would try to render the same annotation.
-    if (!samePage(item.pageUrl, location.href)) return;
 
     try {
       const id = await AT.store.getIdentity();
@@ -500,11 +495,44 @@
       identityName = '';
     }
 
+    syncToPage();
+
+    /* A single-page app can navigate off this item's page - or back onto it -
+     * with no page load for boot() to fire on. Without this the walkthrough
+     * HUD sits on a page it has nothing to say about, pointing at an
+     * annotation that belongs somewhere else. */
+    if (AT.nav) {
+      AT.nav.onChange(syncToPage);
+      AT.nav.start();
+    }
+  }
+
+  /* Mounts or tears down for whatever page we are on NOW. Split out of boot()
+   * so it can run again after an in-page navigation: a walkthrough item
+   * belongs to exactly one page, and whether we are on it can change without
+   * anything reloading. */
+  function syncToPage() {
+    if (!items.length) return;
+    const item = items[index];
+
+    // Only act on the page this item belongs to. Without it every tab opened
+    // afterwards would try to render the same annotation.
+    if (!samePage(item.pageUrl, location.href)) {
+      teardown();
+      return;
+    }
+
+    if (host) return; // already up for this page
+
     // The overlay boots on document_idle too; give it a moment to exist.
     setTimeout(() => {
+      /* Re-checked: 250ms is long enough for a fast app to have moved on
+       * again, and mounting onto the wrong page is the bug being fixed. */
+      const now = items[index];
+      if (!now || !samePage(now.pageUrl, location.href)) return;
       mount();
-      const ok = place(item.ann);
-      if (ok) scrollTo(item.ann);
+      const ok = place(now.ann);
+      if (ok) scrollTo(now.ann);
       render(ok);
     }, 250);
   }
@@ -524,6 +552,10 @@
     _index: () => index,
     _items: () => items,
     _goTo: goTo,
-    _expanded: () => expanded
+    _expanded: () => expanded,
+    /* The in-page navigation decision, reachable directly because a harness
+     * cannot navigate: history.pushState throws a SecurityError on file://
+     * (measured), so there is no way to change location.href for real. */
+    _syncToPage: syncToPage
   };
 })();

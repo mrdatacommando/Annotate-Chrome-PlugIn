@@ -223,6 +223,36 @@
         pageSaw.length === 0, JSON.stringify(pageSaw));
     }
 
+    /* --- 4b. the app navigates underneath the walkthrough ---------------- */
+    {
+      /* A walkthrough item belongs to exactly one page. A single-page app can
+       * move off it with no page load, which used to leave the HUD sitting
+       * there pointing at an annotation from somewhere else.
+       *
+       * Driven through the decision function directly: history.pushState
+       * throws a SecurityError on file:// (measured), so a harness cannot
+       * change location.href for real. */
+      const items = AT.reviewMode._items();
+      const realUrl = items[AT.reviewMode._index()].pageUrl;
+
+      check('the HUD is up before the app navigates',
+        !!document.getElementById('at-review-hud'));
+
+      items[AT.reviewMode._index()].pageUrl = 'https://example.com/somewhere-else';
+      AT.reviewMode._syncToPage();
+      await tick(40);
+      check('navigating off the item\'s page removes the HUD',
+        !document.getElementById('at-review-hud'));
+      check('and takes its marks off the page with it',
+        AT.overlay.layer.querySelectorAll('[data-at-review="1"]').length === 0);
+
+      items[AT.reviewMode._index()].pageUrl = realUrl;
+      AT.reviewMode._syncToPage();
+      await tick(400); // syncToPage waits 250ms for the overlay
+      check('navigating back brings it up again',
+        !!document.getElementById('at-review-hud'));
+    }
+
     /* --- 5. closing ------------------------------------------------------ */
     btn('Dismiss').click();
     await tick(80);

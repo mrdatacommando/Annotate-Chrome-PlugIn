@@ -138,6 +138,11 @@
     const got = await chrome.storage.local.get(REVIEW_KEY);
     const state = got[REVIEW_KEY];
     if (!state || !Array.isArray(state.items) || !state.items.length) return null;
+    /* A closed bundle is not on offer. The record outlives the bundle because
+     * it also holds the reviewer's unexported replies, but serving somebody's
+     * findings to an assistant after they closed the bundle is answering a
+     * question about something nobody has open. */
+    if (state.open !== true) return null;
 
     return {
       bundle: state.bundleName || null,

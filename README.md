@@ -10,7 +10,7 @@ everything together.
 ## Download
 
 **Just want to use it?** Grab
-[`annotate-tool-v1.15.0.zip`](releases/annotate-tool-v1.15.0.zip) from the
+[`annotate-tool-v1.16.0.zip`](releases/annotate-tool-v1.16.0.zip) from the
 `releases/` folder, or from the [latest release](../../releases/latest) page,
 then follow **Install** below. Nothing else in this repository is needed to run
 the extension — the source is here for people who want to read or change it.
@@ -20,7 +20,7 @@ the extension — the source is here for people who want to read or change it.
 Chrome blocks side-loaded `.crx` files outside the Web Store, so **Load
 unpacked** is the only reliable install path.
 
-1. Unzip `annotate-tool-v1.15.0.zip` somewhere permanent (Chrome reads the folder on
+1. Unzip `annotate-tool-v1.16.0.zip` somewhere permanent (Chrome reads the folder on
    every launch — if you delete it, the extension disappears).
 2. Open `chrome://extensions`.
 3. Turn on **Developer mode** (top right).
@@ -207,6 +207,14 @@ the session or disconnecting removes every marker.
 
 Someone sends you a ZIP? You do not need a session of your own.
 
+**While a bundle is open you cannot start a session**, and the popup says so
+with a link to the review page. Reviewing someone's findings and recording
+your own are two different jobs, and running both at once filed annotations
+against the wrong one. **Close bundle** on the review page releases it.
+Closing keeps your replies — the record also holds your unexported review
+work, so closing lowers a flag rather than deleting anything, and re-opening
+the same bundle restores where you were.
+
 1. Click the toolbar icon → **Open a review bundle…** (or drop a ZIP onto the
    review page).
 2. Step through one annotation at a time. Each shows the marked text or image,
@@ -287,6 +295,17 @@ These are design decisions, not bugs — but you should know about them.
 - **Restore is best-effort on dynamic pages.** Anything that can't be re-found
   after a reload is flagged *unplaced* — its content is kept and exported, only
   its position is lost. Nothing is ever silently dropped.
+- **Single-page apps are followed by polling**, about 2.5 times a second in
+  the top frame only. `pushState` fires no event a content script can hear,
+  and patching `history.pushState` does not help: content scripts run in an
+  isolated world, so the page's own calls never reach the patch. The honest
+  alternative is the `webNavigation` permission, which would put *"Read your
+  browsing history"* on the install prompt — a poor trade for a few hundred
+  milliseconds. So a redraw after an in-app navigation can lag very slightly.
+- **An app that routes entirely in the hash files everything under one page.**
+  `#section-2` is treated as the same document, deliberately, so one page's
+  annotations stay in one report entry. An app whose whole route lives in the
+  hash (`#/orders/42`) therefore groups every route together.
 - **Some pages can never be annotated:** `chrome://` pages, the Chrome Web
   Store, and the built-in PDF viewer. Chrome forbids content scripts there.
 - **Region highlights are rectangles, not shapes.** Boxing an image records
@@ -334,6 +353,7 @@ background.js          service worker: capture queue, viewer, downloads
 content/overlay.js     closed shadow-DOM UI, tool arming, restore
 core/store.js          chrome.storage.local wrapper
 core/session.js        session lifecycle across pages
+core/nav.js            notices in-page (SPA) navigation; detection only
 core/anchor.js         serialize/restore annotation positions
 core/box-tool.js       shared factory for point-anchored, draggable boxes
 core/zip.js            dependency-free STORE-only ZIP writer
@@ -382,13 +402,14 @@ chrome.exe --headless --disable-gpu --allow-file-access-from-files \
 | `folder.html` | Folder naming, bundle ordering, error classification |
 | `options-page.html` | Settings page renders each folder state correctly |
 | `lens.html` | Magnifier geometry: the under-cursor-is-centred invariant |
+| `nav.html` | In-page navigation: what counts as a page change, and that it polls |
 | `live-view.html` | Live HUD: stepping, the review pane, replying |
 | `review-page.html` | The review page boots to its empty state |
 | `frames.html` | iframe paths, top-URL resolution, relayed writes |
 | `roundtrip.html` | Export → read → review → re-export, and v1 compatibility |
 | `integration.html` | Full stack: create, capture, reload-restore, unplaced, region highlights, popover saves, arrow geometry |
 
-587 checks at time of writing.
+645 checks at time of writing.
 
 **Not covered by the harnesses**, because they need a real extension context:
 `tabs.captureVisibleTab`, `chrome.downloads`, and cross-tab session sync. Those

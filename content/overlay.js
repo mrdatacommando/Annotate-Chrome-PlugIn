@@ -685,8 +685,17 @@
 
     /* Draws every stored annotation for this URL. Anything whose anchor can no
      * longer be resolved is marked unplaced rather than dropped, and the user
-     * is told once - silently losing their notes would be far worse. */
-    async restoreAll() {
+     * is told once - silently losing their notes would be far worse.
+     *
+     * `opts.persist` false records nothing and says nothing: used for the
+     * early attempts after an in-page navigation, where a failure to place
+     * usually means the new view has not finished rendering, not that the
+     * annotation is lost. Writing unplaced:true there would turn a timing
+     * detail into a permanent mark on the user's data. Returns the number
+     * that could not be placed, so the caller can decide to try again. */
+    async restoreAll(opts) {
+      const o = opts || {};
+      const persist = o.persist !== false;
       const anns = await AT.session.annotationsForPage();
       let lost = 0;
       for (const ann of anns) {
@@ -700,12 +709,14 @@
         }
         if (!ok) {
           lost++;
-          if (!ann.unplaced) await AT.session.updateAnnotation(ann.id, { unplaced: true });
-        } else if (ann.unplaced) {
+          if (persist && !ann.unplaced) {
+            await AT.session.updateAnnotation(ann.id, { unplaced: true });
+          }
+        } else if (ann.unplaced && persist) {
           await AT.session.updateAnnotation(ann.id, { unplaced: false });
         }
       }
-      if (lost) {
+      if (lost && persist) {
         api.toast(
           lost + ' annotation' + (lost > 1 ? 's' : '') +
             ' could not be re-placed on this page. The content is safe and will ' +
@@ -714,6 +725,88 @@
         );
       }
       await api.refreshCount();
+      return lost;
+    },
+
+    /* Resolves once the DOM has been quiet for `quietMs`, or after `maxMs`,
+     * whichever comes first. Used to let a single-page app finish swapping its
+     * view in before we judge whether an anchor still resolves.
+     *
+     * Deliberately not requestAnimationFrame: rAF does not fire in an
+     * unpainted tab, and a route change in a background tab is exactly the
+     * case this has to survive. Measured - a bare double-rAF here simply never
+     * ran. */
+    settle(opts) {
+      const o = opts || {};
+      const quietMs = o.quietMs || 150;
+      const maxMs = o.maxMs || 1200;
+      return new Promise((resolve) => {
+        let idle = null;
+        let cap = null;
+        let obs = null;
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          if (idle) clearTimeout(idle);
+          if (cap) clearTimeout(cap);
+          if (obs) {
+            try {
+              obs.disconnect();
+            } catch (_) {}
+          }
+          resolve();
+        };
+        idle = setTimeout(finish, quietMs);
+        cap = setTimeout(finish, maxMs);
+        try {
+          obs = new MutationObserver(() => {
+            if (done) return;
+            clearTimeout(idle);
+            idle = setTimeout(finish, quietMs);
+          });
+          obs.observe(document.documentElement || document, {
+            childList: true,
+            subtree: true
+          });
+        } catch (_) {
+          /* No MutationObserver is survivable - the timers still fire. */
+          finish();
+        }
+      });
+    },
+
+    /* The URL changed with no page load. Two things have to happen, in this
+     * order:
+     *
+     *   1. Clear immediately. Leaving the old page's marks drawn over the new
+     *      view is the bug this exists to fix, and the user should not watch
+     *      them linger while we wait for anything.
+     *   2. Decide slowly. annotationsForPage() reads the URL fresh, so the
+     *      right set comes back on its own - but the new view may not have
+     *      rendered yet. Settle, try, and only let the LAST attempt record an
+     *      annotation as unplaced or say so out loud.
+     */
+    async renavigate(opts) {
+      const o = opts || {};
+      const attempts = o.attempts || 3;
+      placed.forEach((_, id) => api.untrack(id));
+      if (!activeSession) {
+        await api.refreshCount();
+        return 0;
+      }
+      let lost = 0;
+      for (let i = 0; i < attempts; i++) {
+        const isLast = i === attempts - 1;
+        await api.settle(o.settle);
+        lost = await api.restoreAll({ persist: isLast });
+        if (!lost) return 0;
+        /* Something did not place. Clear what did, so the next attempt starts
+         * from nothing rather than drawing a second copy of the ones that
+         * already worked. */
+        if (!isLast) placed.forEach((_, id) => api.untrack(id));
+      }
+      return lost;
     },
 
     /* A single shared popover, used by every tool for editing and deleting.
@@ -873,6 +966,33 @@
         await api.refreshCount();
       }
     });
+
+    /* In-page navigation. A single-page app changes the URL without a reload,
+     * so nothing re-runs and the previous page's annotations stay drawn over
+     * the new view.
+     *
+     * Only the TOP frame watches, and tells the rest. Annotations are filed
+     * under the top page's URL (see AT.session.topPageUrl), so a subframe's
+     * own location is not what decides which set belongs on screen - and a
+     * page with twenty iframes would otherwise run twenty pollers to answer
+     * one question. Same shape as the arming broadcast. */
+    /* Guarded on AT.nav existing at all: everything below this point in boot()
+     * - including the Escape handler - would be lost to a TypeError if it were
+     * missing, which is a steep price for a feature that only improves
+     * redrawing. Watching for navigation is an enhancement; the toolbar
+     * working is not. */
+    if (AT.nav && AT.session.IS_TOP) {
+      AT.nav.onChange(() => {
+        chrome.runtime.sendMessage({ type: 'AT_NAV' }).catch(() => {});
+        api.renavigate();
+      });
+      AT.nav.start();
+    } else if (!AT.session.IS_TOP) {
+      chrome.runtime.onMessage.addListener((msg) => {
+        if (!msg || msg.type !== 'AT_NAV_STATE') return;
+        api.renavigate();
+      });
+    }
 
     /* Captures on behalf of a subframe. Only the top frame answers, because
      * only the top frame's toolbar is on screen - a subframe hiding its own

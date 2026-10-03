@@ -1,0 +1,165 @@
+<!doctype html>
+<!-- Annotate Tool - Copyright (C) 2026 Mark Van de Velde
+     SPDX-License-Identifier: GPL-3.0-only
+     This program comes with ABSOLUTELY NO WARRANTY. See LICENSE for terms. -->
+<html>
+<head><meta charset="utf-8"><title>Annotate Tool - in-page navigation</title></head>
+<body>
+<div id="checks">pending</div>
+
+<script src="../core/session.js"></script>
+<script src="../core/nav.js"></script>
+
+<script>
+(function () {
+  const lines = [];
+  function flush() { document.getElementById('checks').textContent = lines.join('\n'); }
+  function check(label, ok, detail) {
+    lines.push((ok ? 'PASS ' : 'FAIL ') + label + (detail ? ' :: ' + detail : ''));
+    flush();
+  }
+
+  /* A stand-in for window, so navigation can be driven with no History, no
+   * real timers and no page loads. start() takes the window to use precisely
+   * so this is possible. */
+  function fakeWin(href) {
+    return {
+      location: { href: href },
+      _listeners: {},
+      _intervals: [],
+      addEventListener(type, fn) {
+        (this._listeners[type] = this._listeners[type] || []).push(fn);
+      },
+      removeEventListener(type, fn) {
+        this._listeners[type] = (this._listeners[type] || []).filter((f) => f !== fn);
+      },
+      setInterval(fn, ms) {
+        this._intervals.push({ fn: fn, ms: ms });
+        return this._intervals.length;
+      },
+      clearInterval(id) { this._intervals[id - 1] = null; },
+      /* Pretend the page navigated, then fire whatever the browser would. */
+      go(href, event) {
+        this.location.href = href;
+        (this._listeners[event] || []).forEach((fn) => fn());
+      },
+      tick() {
+        this._intervals.forEach((i) => { if (i) i.fn(); });
+      },
+      liveIntervals() { return this._intervals.filter(Boolean).length; },
+      liveListeners(type) { return (this._listeners[type] || []).length; }
+    };
+  }
+
+  const A = 'https://example.com/orders';
+  const B = 'https://example.com/orders/42';
+
+  /* --- what counts as a page change ------------------------------------- */
+
+  AT.nav._reset();
+  AT.nav.seed(A);
+  check('seeding does not count as navigating', AT.nav.current() === A);
+
+  let fired = [];
+  AT.nav.onChange((next, prev) => fired.push([prev, next]));
+
+  check('the same URL is not a navigation', AT.nav.check(A) === false);
+  check('and nothing was announced', fired.length === 0);
+
+  /* Hash is stripped by AT.session.normalizeUrl, so #section-2 is the same
+   * document. Worth pinning: it means an app that routes ENTIRELY in the hash
+   * files every route under one page. That follows from the existing
+   * normalisation rule, not from nav.js, and changing it would re-file every
+   * annotation ever recorded. */
+  check('a hash-only change is not a page change',
+    AT.nav.check(A + '#section-2') === false);
+  check('still nothing announced', fired.length === 0);
+
+  check('a path change IS a page change', AT.nav.check(B) === true);
+  check('the listener was told where from and to',
+    fired.length === 1 && fired[0][0] === A && fired[0][1] === B,
+    JSON.stringify(fired));
+
+  /* Query is kept by normalizeUrl - ?id=42 is genuinely a different page. */
+  check('a query change IS a page change',
+    AT.nav.check(B + '?tab=items') === true);
+
+  check('navigating back announces it too', AT.nav.check(A) === true);
+  check('three navigations, three announcements', fired.length === 3, String(fired.length));
+
+  /* --- subscribers ------------------------------------------------------- */
+
+  AT.nav._reset();
+  AT.nav.seed(A);
+  const order = [];
+  const off = AT.nav.onChange(() => order.push('first'));
+  AT.nav.onChange(() => { throw new Error('this listener is broken'); });
+  AT.nav.onChange(() => order.push('third'));
+
+  AT.nav.check(B);
+  check('a throwing listener does not strand the others',
+    order.join(',') === 'first,third', order.join(','));
+
+  off();
+  order.length = 0;
+  AT.nav.check(A);
+  check('unsubscribing stops that listener only',
+    order.join(',') === 'third', order.join(','));
+
+  /* --- what actually watches --------------------------------------------- */
+
+  AT.nav._reset();
+  const w = fakeWin(A);
+  let seen = 0;
+  AT.nav.onChange(() => seen++);
+  AT.nav.start(w);
+
+  check('starting seeds from the window it was given', AT.nav.current() === A);
+  check('starting announces nothing', seen === 0, String(seen));
+  check('it listens for popstate', w.liveListeners('popstate') === 1);
+  check('it listens for hashchange', w.liveListeners('hashchange') === 1);
+  check('it polls, because pushState fires no event a content script can hear',
+    w.liveIntervals() === 1);
+
+  AT.nav.start(w);
+  AT.nav.start(w);
+  check('start is idempotent - no duplicate pollers',
+    w.liveIntervals() === 1, String(w.liveIntervals()));
+  check('nor duplicate listeners', w.liveListeners('popstate') === 1);
+
+  w.go(B, 'popstate');
+  check('a popstate navigation is caught at once', seen === 1, String(seen));
+
+  /* The case the whole module exists for: the app changed the URL with
+   * pushState, which fires NOTHING. Only the poll sees it. */
+  w.location.href = 'https://example.com/invoices';
+  check('a pushState-style change fires no event', seen === 1, String(seen));
+  w.tick();
+  check('but the poll catches it', seen === 2, String(seen));
+
+  w.tick();
+  check('and does not re-announce a URL it already reported', seen === 2, String(seen));
+
+  AT.nav.stop(w);
+  check('stopping clears the poller', w.liveIntervals() === 0);
+  check('stopping removes the popstate listener', w.liveListeners('popstate') === 0);
+  check('stopping removes the hashchange listener', w.liveListeners('hashchange') === 0);
+
+  w.location.href = 'https://example.com/gone';
+  w.tick();
+  check('and nothing is announced after stopping', seen === 2, String(seen));
+
+  /* --- samePage, used by the review HUD ---------------------------------- */
+
+  check('samePage ignores the hash', AT.nav.samePage(A, A + '#x') === true);
+  check('samePage separates different paths', AT.nav.samePage(A, B) === false);
+  check('samePage separates different queries',
+    AT.nav.samePage(A, A + '?page=2') === false);
+  check('samePage survives a URL it cannot parse',
+    AT.nav.samePage('not a url', 'not a url') === true);
+
+  AT.nav._reset();
+})();
+</script>
+</body>
+</html>

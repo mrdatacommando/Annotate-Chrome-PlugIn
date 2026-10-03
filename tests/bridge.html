@@ -38,6 +38,7 @@
   mem.at_review = {
     bundleName: 'annotate-session-2026-09-08-0900.zip',
     updatedAt: '2026-09-10T10:00:00.000Z',
+    open: true,
     items: [{
       id: 'r1', type: 'highlight', author: 'Sam',
       text: 'Free forever', comment: 'Not true',
@@ -202,6 +203,30 @@
 
     const all = await ask('all');
     check('one call can fetch both', !!(all.summary && all.review));
+
+    /* A closed bundle is not on offer. The record survives closing because it
+     * also holds the reviewer's unexported replies, so "there is a record"
+     * and "a bundle is open" are different questions - and only the second
+     * one entitles a reader to the findings. */
+    const stillThere = JSON.parse(JSON.stringify(mem.at_review));
+    mem.at_review.open = false;
+    const closed = await ask('review');
+    check('a CLOSED bundle is withheld', closed && closed.review === null,
+      closed && JSON.stringify(closed.review));
+    check('closing it did not discard the replies',
+      mem.at_review.items[0].replies.length === 1);
+
+    /* A record written before the flag existed is finished work, not an open
+     * bundle - otherwise upgrading would serve stale findings for ever. */
+    delete mem.at_review.open;
+    const legacy = await ask('review');
+    check('a record with no open flag is treated as closed',
+      legacy && legacy.review === null,
+      legacy && JSON.stringify(legacy.review));
+
+    mem.at_review = stillThere;
+    const reopened = await ask('review');
+    check('and it comes back once open again', !!(reopened && reopened.review));
 
     /* --- discoverable, and closed by default ------------------------------ */
     const bogus = await ask('destroy');

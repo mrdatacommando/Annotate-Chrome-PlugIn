@@ -39,6 +39,7 @@
 <script src="../core/store.js"></script>
 <script src="../core/anchor.js"></script>
 <script src="../core/session.js"></script>
+<script src="../core/nav.js"></script>
 <script src="../core/zip.js"></script>
 <script src="../core/report.js"></script>
 
@@ -53,6 +54,10 @@
   check('AT.store present', !!(window.AT && AT.store));
   check('AT.anchor present', !!(window.AT && AT.anchor));
   check('AT.session present', !!(window.AT && AT.session));
+  check('AT.nav present', !!(window.AT && AT.nav));
+  /* Loading nav.js must not start a poller. Watching begins when the overlay
+   * asks for it, so a page that never mounts the toolbar never polls. */
+  check('AT.nav does not watch until started', AT.nav.current() === null);
   check('AT.zip present', !!(window.AT && AT.zip));
   check('AT.report present', !!(window.AT && AT.report));
 

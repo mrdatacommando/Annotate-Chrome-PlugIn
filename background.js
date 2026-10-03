@@ -209,6 +209,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  /* The top frame saw an in-page navigation. Relayed to every frame in the
+   * tab so subframes redraw too: their annotations are filed under the TOP
+   * page's URL, which just changed under them without anything in the frame
+   * itself moving. */
+  if (msg.type === 'AT_NAV') {
+    if (!sender.tab) {
+      sendResponse({ ok: false });
+      return true;
+    }
+    chrome.tabs
+      .sendMessage(sender.tab.id, { type: 'AT_NAV_STATE' })
+      .catch(() => {}); // frames without our script are expected
+    sendResponse({ ok: true });
+    return true;
+  }
+
   if (msg.type === 'AT_REGISTER_TAB') {
     // An extension page telling us which tab it is living in.
     if (sender.tab && msg.role) {

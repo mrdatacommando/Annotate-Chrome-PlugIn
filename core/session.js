@@ -63,6 +63,11 @@
     }
   })();
 
+  /* Owned by review/review.js, read here only to answer "is a bundle open?".
+   * Named rather than imported because core/session.js is loaded on every page
+   * and must not depend on the review page's module. */
+  const REVIEW_KEY = 'at_review';
+
   let topUrlCache = null;
 
   async function topPageUrl() {
@@ -232,10 +237,33 @@
       return !!(s && s.active);
     },
 
+    /* True when a review bundle is loaded. Somebody else's findings and your
+     * own recording are two different jobs that both draw on the page, and
+     * running them together is how annotations end up filed against the wrong
+     * one. Cleared by Close bundle on the review page. */
+    async reviewOpen() {
+      try {
+        const got = await chrome.storage.local.get(REVIEW_KEY);
+        const rec = got[REVIEW_KEY];
+        /* Strictly true: a record written before the flag existed is review
+         * work somebody finished with, not a bundle sitting open now. */
+        return !!(rec && rec.open === true);
+      } catch (_) {
+        /* Storage unreachable means we cannot prove a bundle is open, and
+         * refusing to start on a guess would be worse than the overlap. */
+        return false;
+      }
+    },
+
+    /* Returns the session, or NULL when it refused to start. Null rather than
+     * a throw because being blocked is an ordinary answer here, not a fault -
+     * the popup disables the button and says why, and this is the backstop
+     * for every other path in. */
     async start(author) {
       return enqueue(async () => {
         const existing = await AT.store.getSession();
         if (existing && existing.active) return existing;
+        if (await AT.session.reviewOpen()) return null;
         const session = {
           id: newId('s'),
           startedAt: new Date().toISOString(),

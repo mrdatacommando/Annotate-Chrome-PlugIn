@@ -199,7 +199,27 @@
     nameRow.appendChild(nameInput);
     bodyEl.appendChild(nameRow);
 
+    /* A loaded review bundle blocks recording. Said here, with the way out,
+     * rather than letting the button look available and quietly do nothing -
+     * which is how the two ended up mixed in the first place. */
+    const reviewOpen = await AT.session.reviewOpen();
+
     const start = el('button', 'go', 'Start session');
+    if (reviewOpen) {
+      start.disabled = true;
+      bodyEl.appendChild(
+        el('div', 'box warn',
+           'A review bundle is open. Close it on the review page before ' +
+           'starting a session of your own, so your annotations are not ' +
+           'recorded against somebody else’s findings.')
+      );
+      const toReview = el('button', null, 'Go to the review page');
+      toReview.addEventListener('click', async () => {
+        await chrome.runtime.sendMessage({ type: 'AT_OPEN_REVIEW' });
+        window.close();
+      });
+      bodyEl.appendChild(toReview);
+    }
     start.addEventListener('click', async () => {
       const name = nameInput.value.trim();
       if (!name) {
@@ -213,8 +233,12 @@
       }
       start.disabled = true;
       await AT.store.setIdentity(name);
-      await AT.session.start(name);
+      const started = await AT.session.start(name);
+      /* Null means the guard refused - a bundle was opened in another window
+       * between this popup rendering and the click. Re-rendering is the whole
+       * response: it shows the same explanation as the disabled path. */
       render();
+      if (!started) return;
     });
     bodyEl.appendChild(start);
 

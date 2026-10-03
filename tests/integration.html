@@ -105,6 +105,37 @@
   check('overlay exposes its own root internally', !!AT.overlay.shadow);
   check('toolbar hidden with no session', AT.overlay.shadow.querySelector('.bar').hidden === true);
 
+  /* --- a review bundle blocks recording -------------------------------- */
+  {
+    /* Somebody else's findings and your own recording are two different jobs
+     * on the same page. Running both filed annotations against the wrong one,
+     * which is what "sessions getting mixed" looked like from outside. */
+    mem.at_review = { bundleName: 'theirs.zip', items: [], open: true };
+    check('a bundle being open is visible to the session layer',
+      (await AT.session.reviewOpen()) === true);
+
+    const refused = await AT.session.start('Mark');
+    check('starting a session is refused while a bundle is open',
+      refused === null, JSON.stringify(refused));
+    check('and no session was written',
+      (await AT.store.getSession()) == null);
+
+    /* Closing keeps the record - it also holds the reviewer's unexported
+     * replies - and only lowers the flag. */
+    mem.at_review.open = false;
+    check('closing the bundle releases the block',
+      (await AT.session.reviewOpen()) === false);
+    check('and the replies are still there to export',
+      !!mem.at_review && mem.at_review.bundleName === 'theirs.zip');
+
+    /* A record from before the flag existed is finished work, not an open
+     * bundle: upgrading must not lock anyone out of starting a session. */
+    delete mem.at_review.open;
+    check('a record with no open flag does not block',
+      (await AT.session.reviewOpen()) === false);
+    delete mem.at_review;
+  }
+
   /* --- start a session ------------------------------------------------ */
   await AT.session.start();
   await AT.overlay.setActive(true);
@@ -207,6 +238,104 @@
     check('nothing was marked unplaced on a clean restore',
       anns.every(a => !a.unplaced),
       anns.map(a => a.type + ':' + !!a.unplaced).join(', '));
+  }
+
+  /* --- an in-page navigation (single-page app) -------------------------- */
+  {
+    /* The URL changes with no page load, so nothing re-runs on its own and
+     * the previous page's marks stay drawn over content they have nothing to
+     * do with. renavigate() is what the URL watcher calls. */
+    const settle = { quietMs: 5, maxMs: 40 };
+    const realFor = AT.session.annotationsForPage;
+
+    check('the first page\'s marks are on screen before navigating',
+      AT.overlay.layer.querySelectorAll('.note').length === 1 &&
+      document.querySelectorAll('at-hl').length === 1);
+
+    // Page B: a different URL, with nothing recorded against it.
+    AT.session.annotationsForPage = async () => [];
+    await AT.overlay.renavigate({ attempts: 1, settle: settle });
+    check('navigating clears the previous page\'s annotations',
+      AT.overlay.layer.querySelectorAll('.note').length === 0 &&
+      document.querySelectorAll('at-hl').length === 0,
+      AT.overlay.layer.querySelectorAll('.note').length + ' notes, ' +
+      document.querySelectorAll('at-hl').length + ' highlights left behind');
+
+    // ...and back again.
+    AT.session.annotationsForPage = realFor;
+    await AT.overlay.renavigate({ attempts: 1, settle: settle });
+    await tick(80);
+    check('navigating back re-draws the ones that do belong there',
+      AT.overlay.layer.querySelectorAll('.note').length === 1 &&
+      document.querySelectorAll('at-hl').length === 1);
+
+    const back = await AT.session.annotationsForPage();
+    check('and a round trip marked nothing unplaced',
+      back.every((a) => !a.unplaced),
+      back.map((a) => a.type + ':' + !!a.unplaced).join(', '));
+  }
+
+  /* --- a late-rendering app must not cost the user data ----------------- */
+  {
+    /* An app swaps its view AFTER changing the URL, so the first attempt to
+     * re-place can fail on content that has merely not rendered yet. Writing
+     * unplaced:true there would turn a timing detail into a permanent mark on
+     * the user's own record - so only the LAST attempt may record anything. */
+    const settle = { quietMs: 5, maxMs: 40 };
+    const realPlace = AT.tools.note.place;
+
+    /* Watching the WRITES, not just the end state. A version that persists on
+     * every attempt still ends up correct here - the last attempt succeeds and
+     * clears the flag - so an end-state assertion passes either way and tests
+     * nothing. The damage is the write that happens in between, and the false
+     * alarm it raises. */
+    const writes = [];
+    const realUpdate = AT.session.updateAnnotation;
+    AT.session.updateAnnotation = async function (id, patch) {
+      writes.push(JSON.stringify(patch));
+      return realUpdate.call(this, id, patch);
+    };
+    const toasts = [];
+    const realToast = AT.overlay.toast;
+    AT.overlay.toast = function (message, kind) { toasts.push(kind + ': ' + message); };
+
+    let attempt = 0;
+    AT.tools.note.place = function (ann, ctx) {
+      attempt++;
+      // Renders on the third look, like a view that arrived late.
+      return attempt >= 3 ? realPlace.call(this, ann, ctx) : false;
+    };
+    await AT.overlay.renavigate({ attempts: 3, settle: settle });
+    await tick(60);
+
+    check('a late-placing annotation is never WRITTEN as unplaced',
+      writes.every((w) => w.indexOf('"unplaced":true') === -1),
+      writes.join(' | ') || '(no writes)');
+    check('and the user is not warned about one that was merely slow',
+      toasts.length === 0, toasts.join(' | '));
+
+    AT.session.updateAnnotation = realUpdate;
+    AT.overlay.toast = realToast;
+
+    const late = (await AT.session.annotationsForPage()).find((a) => a.type === 'note');
+    check('an annotation that placed late is NOT recorded as unplaced',
+      !!late && !late.unplaced, late ? 'unplaced=' + late.unplaced : 'note was lost!');
+    check('and it is on screen once the view arrived',
+      AT.overlay.layer.querySelectorAll('.note').length === 1);
+
+    // The opposite case still has to work: genuinely gone stays reported.
+    AT.tools.note.place = () => false;
+    await AT.overlay.renavigate({ attempts: 2, settle: settle });
+    const gone = (await AT.session.annotationsForPage()).find((a) => a.type === 'note');
+    check('but one that never places IS flagged, after the retries',
+      !!gone && gone.unplaced === true, gone ? 'unplaced=' + gone.unplaced : 'none');
+
+    // Put the page back as the later tests expect to find it.
+    AT.tools.note.place = realPlace;
+    await AT.overlay.renavigate({ attempts: 1, settle: settle });
+    await tick(60);
+    const healed = (await AT.session.annotationsForPage()).find((a) => a.type === 'note');
+    check('re-placing clears the unplaced flag again', !!healed && !healed.unplaced);
   }
 
   /* --- an annotation whose target has vanished ------------------------- */

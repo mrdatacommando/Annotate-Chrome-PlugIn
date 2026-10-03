@@ -569,7 +569,7 @@
 
       const json = {
         tool: 'Annotate Tool',
-        toolVersion: '1.15.0',
+        toolVersion: '1.16.0',
         schemaVersion: SCHEMA_VERSION,
         session: {
           id: session.id,

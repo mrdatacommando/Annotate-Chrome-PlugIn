@@ -126,9 +126,43 @@
         sessionId: bundle.report.session && bundle.report.session.id,
         cursor: cursor,
         statuses: statuses,
+        /* Whether a bundle is OPEN, as distinct from whether review work
+         * exists. The record also holds drafts, statuses and the cursor - the
+         * reviewer's unexported replies - so closing cannot simply delete it.
+         * A session is blocked while this is true; see AT.session.reviewOpen.
+         *
+         * Records written before this field existed count as closed, so
+         * upgrading does not lock anyone out of starting a session over a
+         * bundle they finished with months ago. */
+        open: true,
         updatedAt: new Date().toISOString()
       }
     });
+  }
+
+  /* Closing has to mean closed. This used to drop the in-page variable and
+   * nothing else, which left at_review in storage for good: the assistant
+   * bridge went on serving those findings, and nothing stopped a new
+   * recording session starting on top of somebody else's review. The replies
+   * are kept - re-opening the same bundle restores them, which is what
+   * loadState is for. */
+  async function closeBundle() {
+    bundle = null;
+    try {
+      const state = await loadState();
+      if (state && state.open) {
+        state.open = false;
+        await chrome.storage.local.set({ [REVIEW_KEY]: state });
+      }
+      /* A walkthrough belongs to the bundle it came from, so it closes too -
+       * otherwise the HUD keeps stepping through a bundle this page has
+       * already let go of. */
+      await chrome.storage.local.remove('at_review_live');
+    } catch (_) {
+      /* Storage failing here must not leave the page stuck on a bundle the
+       * user asked to close. */
+    }
+    renderEmpty();
   }
 
   async function loadState() {
@@ -234,7 +268,25 @@
 
   /* --- empty state / drop target ---------------------------------------- */
 
+  /* Showing the empty state IS this page saying no bundle is open, so make
+   * storage agree. Self-healing on purpose: it also clears a marker left by a
+   * crash, or by a version that did not know to clear one, so nobody ends up
+   * unable to start a session with no obvious way out. Fire-and-forget - the
+   * empty state must render whether or not storage cooperates. */
+  function markClosed() {
+    chrome.storage.local
+      .get(REVIEW_KEY)
+      .then((got) => {
+        const state = got[REVIEW_KEY];
+        if (!state || !state.open) return null;
+        state.open = false;
+        return chrome.storage.local.set({ [REVIEW_KEY]: state });
+      })
+      .catch(() => {});
+  }
+
   function renderEmpty(errorText) {
+    markClosed();
     app.replaceChildren();
     const wrap = el('div', 'empty-state');
     const drop = el('div', 'drop');
@@ -965,10 +1017,7 @@
     });
     actions.appendChild(hint);
     actions.appendChild(button('Export replies', 'go', exportReviewed));
-    actions.appendChild(button('Close bundle', 'quiet', () => {
-      bundle = null;
-      renderEmpty();
-    }));
+    actions.appendChild(button('Close bundle', 'quiet', closeBundle));
 
     main.appendChild(actions);
     shell.appendChild(main);

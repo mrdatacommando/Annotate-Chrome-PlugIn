@@ -322,6 +322,16 @@
       // The session itself changed, or the typed path did.
       if (changes[SESSION_KEY] || changes[PATH_KEY]) schedule();
     });
+
+    /* The published package names the current page and carries the
+     * annotations on it, so an in-page navigation makes it wrong the moment
+     * the URL changes - and a reader cannot tell. Republish on the spot
+     * rather than on the debounce: a stale package that claims to describe
+     * the page in front of you is worse than no package. */
+    if (AT.nav) {
+      AT.nav.onChange(refresh);
+      AT.nav.start();
+    }
   }
 
   if (document.readyState === 'loading') {
