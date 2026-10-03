@@ -36,6 +36,10 @@
   let items = [];       // live.items
   let index = 0;
   let expanded = false;
+  /* The reviewer is typing their name into the bar, because none is set yet and
+   * the live page is the one place it could not be set before - the only way in
+   * was the review page, the popup or options. See the Add annotations branch. */
+  let naming = false;
   let identityName = '';
   /* Whether a review-scoped session is running: the reviewer is adding
    * findings of their own, not just replying to somebody else's. */
@@ -129,6 +133,13 @@
   background: rgba(0,0,0,.28); color: inherit; font: inherit; font-size: 13px;
 }
 .pane textarea:focus { outline: 2px solid #6d4fd0; outline-offset: -1px; }
+.pane input.nameField {
+  width: 100%; box-sizing: border-box;
+  padding: 8px 10px; border-radius: 8px;
+  border: 1px solid rgba(255,255,255,.18);
+  background: rgba(0,0,0,.28); color: inherit; font: inherit; font-size: 13px;
+}
+.pane input.nameField:focus { outline: 2px solid #6d4fd0; outline-offset: -1px; }
 .paneRow { display: flex; align-items: center; gap: 10px; margin-top: 9px; }
 .paneRow .spacer { flex: 1; }
 .paneRow .note { font-size: 11.5px; opacity: .65; }
@@ -488,6 +499,68 @@
     return pane;
   }
 
+  /* Set your name without leaving the page.
+   *
+   * Adding findings of your own needs a name to attribute them to, and until
+   * now the only places to set one were the review page, the popup and options
+   * - none of them reachable from the live page. So a reviewer with no name set
+   *   met a greyed-out "Add annotations" and no way forward from here. This is
+   * that way forward: the same pane the replies use, with one field. */
+  function renderNamePane() {
+    const pane = el('div', 'pane');
+    pane.appendChild(el('h3', null, 'Your name'));
+    pane.appendChild(el('p', 'by',
+      'So your additions are attributed to you in the reply. Saved for next time.'));
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'nameField';
+    input.placeholder = 'your name';
+    input.value = identityName || '';
+    pane.appendChild(input);
+
+    async function commit() {
+      const name = input.value.trim();
+      if (!name) { try { input.focus(); } catch (_) {} return; }
+      save.disabled = true;
+      await AT.store.setIdentity(name);
+      identityName = name;
+      naming = false;
+      /* Straight into adding - setting the name was only ever the thing in the
+       * way of it. start() allows a review-scoped session even with a bundle
+       * open; a plain one it would refuse. */
+      const started = await AT.session.start(identityName, {
+        reviewOf: (live && live.bundleName) || null
+      });
+      if (started) {
+        annotating = true;
+        render(lastPlaced);
+        placeOthers();
+      } else {
+        render(lastPlaced);
+      }
+    }
+
+    const row = el('div', 'paneRow');
+    const save = el('button', 'btn primary', 'Save & add annotations');
+    save.type = 'button';
+    save.addEventListener('click', commit);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); commit(); }
+    });
+    row.appendChild(save);
+
+    const cancel = el('button', 'btn', 'Cancel');
+    cancel.type = 'button';
+    cancel.addEventListener('click', () => { naming = false; render(lastPlaced); });
+    row.appendChild(cancel);
+
+    pane.appendChild(row);
+    /* Once it is actually in the DOM. */
+    setTimeout(() => { try { input.focus(); } catch (_) {} }, 0);
+    return pane;
+  }
+
   function renderPane(ann) {
     const pane = el('div', 'pane');
     pane.hidden = !expanded;
@@ -570,7 +643,7 @@
     const ann = item.ann;
 
     const dock = el('div', 'dock');
-    dock.appendChild(renderPane(ann));
+    dock.appendChild(naming ? renderNamePane() : renderPane(ann));
 
     const hud = el('div', 'hud');
     hud.appendChild(el('span', 'tag', 'Reviewing'));
@@ -688,13 +761,20 @@
       });
       hud.appendChild(attach);
     } else if (!annotating) {
-      const add = el('button', 'btn', 'Add annotations');
+      /* Enabled even with no name set: clicking then asks for one inline rather
+       * than greying out with "set it on the review page" and no way to. */
+      const add = el('button', 'btn',
+        identityName ? 'Add annotations' : 'Add annotations — set your name');
       add.type = 'button';
       add.title = identityName
         ? 'Mark up this page yourself. Your findings go back with your replies.'
-        : 'Set your name on the review page first.';
-      add.disabled = !identityName;
+        : 'Set your name here to start. Your findings go back with your replies.';
       add.addEventListener('click', async () => {
+        if (!identityName) {
+          naming = true;
+          render(lastPlaced);
+          return;
+        }
         add.disabled = true;
         const started = await AT.session.start(identityName, {
           reviewOf: (live && live.bundleName) || null

@@ -1,0 +1,180 @@
+<!doctype html>
+<!-- Annotate Tool - Copyright (C) 2026 Mark Van de Velde
+     SPDX-License-Identifier: GPL-3.0-only
+     This program comes with ABSOLUTELY NO WARRANTY. See LICENSE for terms. -->
+<html>
+<head><meta charset="utf-8"><title>Annotate Tool - naming yourself from the live bar</title></head>
+<body>
+
+<div id="page">
+  <h2 id="h">A page being reviewed</h2>
+  <p id="p1">A paragraph somebody else already marked up.</p>
+</div>
+
+<div id="checks">pending</div>
+
+<script>
+  window.__errors = [];
+  window.onerror = function (m, s, l, c) {
+    window.__errors.push(m + ' @' + (s || '?').split('/').pop() + ':' + l + ':' + c);
+  };
+
+  const mem = {};
+
+  /* The scenario that bit the user: a bundle open live, additions allowed, but
+   * NO identity set - so nothing to attribute an addition to, and (before this
+   * fix) a greyed-out "Add annotations" with no way to set one from here. The
+   * absence of mem.at_identity IS the test condition. */
+  mem.at_review_live = {
+    bundleName: 'theirs.zip',
+    index: 0,
+    total: 1,
+    startedAt: '2026-09-08T10:00:00.000Z',
+    items: [
+      { pageUrl: location.href, pageTitle: 'Test page',
+        ann: { id: 'a1', type: 'note', color: '#f4c430', author: 'Mark',
+               text: 'Heading is the wrong size', comment: '',
+               anchor: { kind: 'point', selector: '#h', offset: { x: 4, y: 4 } },
+               review: { status: 'open', replies: [] } } }
+    ]
+  };
+
+  window.__sent = [];
+  window.__storageListeners = [];
+  window.chrome = {
+    storage: {
+      local: {
+        async get(k) {
+          if (k === null) return JSON.parse(JSON.stringify(mem));
+          if (typeof k === 'string') {
+            return k in mem ? { [k]: JSON.parse(JSON.stringify(mem[k])) } : {};
+          }
+          return {};
+        },
+        async set(o) {
+          const changes = {};
+          for (const key of Object.keys(o)) {
+            changes[key] = {
+              oldValue: mem[key],
+              newValue: JSON.parse(JSON.stringify(o[key]))
+            };
+            mem[key] = JSON.parse(JSON.stringify(o[key]));
+          }
+          window.__storageListeners.forEach((fn) => { try { fn(changes, 'local'); } catch (_) {} });
+        },
+        async remove(keys) { (Array.isArray(keys) ? keys : [keys]).forEach(k => delete mem[k]); },
+        async getBytesInUse() { return 0; }
+      },
+      onChanged: { addListener(fn) { window.__storageListeners.push(fn); } }
+    },
+    runtime: {
+      id: 't',
+      async sendMessage(msg) { window.__sent.push(msg); return { ok: true }; },
+      onMessage: { addListener() {} }
+    }
+  };
+</script>
+
+<script src="../core/store.js"></script>
+<script src="../core/anchor.js"></script>
+<script src="../core/session.js"></script>
+<script src="../core/box-tool.js"></script>
+<script src="../tools/highlight.js"></script>
+<script src="../tools/note.js"></script>
+<script src="../tools/box.js"></script>
+<script src="../tools/arrow.js"></script>
+<script src="../content/overlay.js"></script>
+<script src="../content/review-mode.js"></script>
+
+<script>
+(async function () {
+  const lines = [];
+  function flush() { document.getElementById('checks').textContent = lines.join('\n'); }
+  function check(label, ok, detail) {
+    lines.push((ok ? 'PASS ' : 'FAIL ') + label + (detail ? ' :: ' + detail : ''));
+    flush();
+  }
+  const tick = (ms) => new Promise(r => setTimeout(r, ms || 60));
+  const R = () => AT.reviewMode;
+  const shadow = () => R()._shadow();
+  const btn = (label) => Array.from(shadow().querySelectorAll('.btn'))
+    .find(b => b.textContent.indexOf(label) === 0);
+
+  try {
+    await tick(500); // boot waits for the overlay to exist
+
+    check('no load-time errors', window.__errors.length === 0, window.__errors.join(' | '));
+    check('the live HUD mounted', !!document.getElementById('at-review-hud'));
+
+    /* --- the dead end, removed ------------------------------------------- */
+
+    const add = btn('Add annotations');
+    check('the bar offers Add annotations', !!add,
+      add ? add.textContent : 'not found');
+
+    /* The regression itself: with no name set the button was DISABLED, and the
+     * only places to set a name were off this page. It must stay clickable. */
+    check('Add annotations is clickable even with no name set',
+      !!add && add.disabled !== true,
+      add ? 'disabled=' + add.disabled : 'no button');
+    check('and it says so on its face',
+      !!add && add.textContent.indexOf('set your name') > -1,
+      add ? add.textContent : '');
+
+    /* Nothing should have started yet - clicking only asks for the name. */
+    check('no session has been started merely by loading',
+      !(await chrome.storage.local.get('at_session')).at_session);
+
+    /* --- setting the name inline ----------------------------------------- */
+
+    add.click();
+    await tick(80);
+
+    const field = shadow().querySelector('input.nameField');
+    check('clicking opens a name field in the bar', !!field);
+    check('and still has not started a session',
+      !(await chrome.storage.local.get('at_session')).at_session,
+      'a session was started before a name was even entered');
+
+    const saveBtn = Array.from(shadow().querySelectorAll('.btn'))
+      .find(b => b.textContent.indexOf('Save') === 0);
+    check('the name field offers a Save', !!saveBtn);
+
+    field.value = 'Dana';
+    saveBtn.click();
+    await tick(250);
+
+    const id = (await chrome.storage.local.get('at_identity')).at_identity;
+    check('saving writes the name, so it is remembered next time',
+      !!id && id.name === 'Dana', id ? JSON.stringify(id.name) : 'none');
+
+    const session = (await chrome.storage.local.get('at_session')).at_session;
+    check('and it goes straight into adding - a session starts',
+      !!session && session.active === true,
+      session ? 'active=' + session.active : 'no session');
+    check('the session is attached to this bundle, not a stray one',
+      !!session && session.reviewOf === 'theirs.zip',
+      session ? String(session.reviewOf) : 'no session');
+    check('recorded under the name just set',
+      !!session && session.author === 'Dana',
+      session ? String(session.author) : 'no session');
+
+    /* The name field has done its job and is gone. */
+    check('the name field closes once saved',
+      !shadow().querySelector('input.nameField'));
+
+    /* The annotate tool is actually live now, not just a flag flipped. */
+    await tick(100);
+    const armed = !!(AT.overlay && AT.overlay.shadow &&
+      AT.overlay.shadow.querySelector('.bar'));
+    check('the annotate toolbar is now armed on the page',
+      armed, armed ? 'bar present' : 'no annotate bar');
+  } catch (e) {
+    lines.push('FAIL threw after ' + lines.length + ' checks :: ' +
+      (e && e.message ? e.message : String(e)));
+  }
+  flush();
+})();
+</script>
+</body>
+</html>

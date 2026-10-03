@@ -479,7 +479,7 @@ chrome.exe --headless --disable-gpu --allow-file-access-from-files \
 | `roundtrip.html` | Export → read → review → re-export, and v1 compatibility |
 | `integration.html` | Full stack: create, capture, reload-restore, unplaced, region highlights, popover saves, arrow geometry |
 
-752 checks at time of writing.
+767 checks at time of writing.
 
 **Not covered by the harnesses**, because they need a real extension context:
 `tabs.captureVisibleTab`, `chrome.downloads`, and cross-tab session sync. Those
