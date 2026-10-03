@@ -10,7 +10,7 @@ everything together.
 ## Download
 
 **Just want to use it?** Grab
-[`annotate-tool-v1.17.0.zip`](releases/annotate-tool-v1.17.0.zip) from the
+[`annotate-tool-v1.18.0.zip`](releases/annotate-tool-v1.18.0.zip) from the
 `releases/` folder, or from the [latest release](../../releases/latest) page,
 then follow **Install** below. Nothing else in this repository is needed to run
 the extension — the source is here for people who want to read or change it.
@@ -20,7 +20,7 @@ the extension — the source is here for people who want to read or change it.
 Chrome blocks side-loaded `.crx` files outside the Web Store, so **Load
 unpacked** is the only reliable install path.
 
-1. Unzip `annotate-tool-v1.17.0.zip` somewhere permanent (Chrome reads the folder on
+1. Unzip `annotate-tool-v1.18.0.zip` somewhere permanent (Chrome reads the folder on
    every launch — if you delete it, the extension disappears).
 2. Open `chrome://extensions`.
 3. Turn on **Developer mode** (top right).
@@ -225,13 +225,38 @@ the session or disconnecting removes every marker.
 
 Someone sends you a ZIP? You do not need a session of your own.
 
-**While a bundle is open you cannot start a session**, and the popup says so
-with a link to the review page. Reviewing someone's findings and recording
-your own are two different jobs, and running both at once filed annotations
-against the wrong one. **Close bundle** on the review page releases it.
-Closing keeps your replies — the record also holds your unexported review
-work, so closing lowers a flag rather than deleting anything, and re-opening
-the same bundle restores where you were.
+**While a bundle is open you cannot start an ordinary session**, and the popup
+says so — its review button becomes **Go to review bundle**. Reviewing
+someone's findings and recording your own are two different jobs, and running
+both at once filed annotations against the wrong one. **Close bundle** on the
+review page releases it. Closing keeps your replies: the record also holds
+your unexported review work, so closing lowers a flag rather than deleting
+anything.
+
+**A bundle left open is picked up again.** Reopen the review page and it reads
+the same file back out of your working folder, with your replies, your
+statuses and your place in it. The ZIP itself is never stored — a bundle is
+tens of megabytes of screenshots — so one opened through a file dialog cannot
+be re-read automatically; the page names it and asks for the file, and always
+offers **Close bundle** so you are never holding a bundle you cannot put down.
+
+### Adding findings of your own
+
+Reviewing a bundle and noticing something nobody raised yet happen in the same
+sitting. From the walkthrough bar (**Open live**), **Add your own** starts a
+session attached to that bundle — so the full toolbar is live on the page and
+highlights, notes, boxes, arrows and screenshots all work exactly as they
+normally do.
+
+What you mark is merged into the review list beside the findings you were
+sent, badged **yours**, and goes back inside your reply when you **Export
+replies**. Until then you can **Edit** or **Delete** your own entries from the
+review page. You cannot edit or delete theirs — you reply to those; a bundle
+that came back with its original findings quietly altered would be worse than
+useless.
+
+The popup shows **Adding to a review** while this is running, and **Stop
+adding** ends it without offering to export a second bundle of its own.
 
 1. Click the toolbar icon → **Open a review bundle…** (or drop a ZIP onto the
    review page).
@@ -423,12 +448,14 @@ chrome.exe --headless --disable-gpu --allow-file-access-from-files \
 | `nav.html` | In-page navigation: what counts as a page change, and that it polls |
 | `live-view.html` | Live HUD: stepping, the review pane, replying |
 | `review-page.html` | The review page: empty state, and that opening a bundle records it as open |
+| `review-reopen.html` | A bundle left open is read back from the working folder, with your replies and your own additions |
+| `review-unreachable.html` | A bundle left open that cannot be reopened: named, kept, and closable |
 | `viewer-page.html` | The export view: editing a comment, deleting an entry or a page, and which screenshots go with them |
 | `frames.html` | iframe paths, top-URL resolution, relayed writes |
 | `roundtrip.html` | Export → read → review → re-export, and v1 compatibility |
 | `integration.html` | Full stack: create, capture, reload-restore, unplaced, region highlights, popover saves, arrow geometry |
 
-680 checks at time of writing.
+713 checks at time of writing.
 
 **Not covered by the harnesses**, because they need a real extension context:
 `tabs.captureVisibleTab`, `chrome.downloads`, and cross-tab session sync. Those

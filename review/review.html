@@ -126,6 +126,16 @@
   }
   .badge.warn { background: var(--warnbg); color: var(--warn); }
   .badge.done { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); }
+  /* Your own additions, told apart from the findings you were sent. */
+  .badge.mine { background: color-mix(in srgb, #7a5cff 24%, transparent); color: #8f78ff; }
+  .rail .row .mine { color: #8f78ff; font-size: 11px; margin-left: 4px; }
+  .mine-actions { display: flex; gap: 8px; margin: 2px 0 10px; }
+  .mine-actions button.armed { background: var(--warnbg); color: var(--warn); font-weight: 600; }
+  textarea.mine-edit {
+    width: 100%; font: inherit; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--bg); color: inherit;
+    resize: vertical;
+  }
 
   .quote {
     margin: 0 0 12px; padding: 12px 14px; border-radius: 10px;

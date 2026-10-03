@@ -170,6 +170,202 @@
     return got[REVIEW_KEY] || null;
   }
 
+  /* --- findings the reviewer added themselves -----------------------------
+   *
+   * Reviewing a bundle and noticing something nobody raised yet happen in the
+   * same sitting. The walkthrough can start a session scoped to this bundle
+   * (AT.session.start with reviewOf), and what it records is merged INTO the
+   * report here rather than kept in a list beside it.
+   *
+   * Into the report, because then the rail, the stepping, the counts, the
+   * screenshots and - the part that matters most - the export all go on
+   * reading one source of truth. A parallel list would have meant teaching
+   * every one of those about a second one.
+   */
+  let mineIds = new Set();   // annotation ids that came from the reviewer
+  let minePages = new Set(); // page urls that exist ONLY because of those
+
+  async function mergeAdditions() {
+    if (!bundle) return;
+
+    /* Rebuilt from scratch every time rather than appended to. An addition
+     * can be edited or deleted while this page is open, and a merge that only
+     * ever added would show the old wording for ever. */
+    bundle.report.pages.forEach((p) => {
+      p.annotations = (p.annotations || []).filter((a) => !mineIds.has(a.id));
+      p.screenshots = (p.screenshots || []).filter((s) => !mineIds.has(s.forAnnotation));
+    });
+    bundle.report.pages = bundle.report.pages.filter(
+      (p) => (p.annotations || []).length || !minePages.has(p.url));
+    mineIds = new Set();
+    minePages = new Set();
+
+    let session = null;
+    try {
+      session = await AT.store.getSession();
+    } catch (_) {
+      session = null;
+    }
+    if (session && session.reviewOf === bundle.name) {
+      for (const sp of session.pages || []) {
+        const anns = sp.annotations || [];
+        if (!anns.length) continue;
+
+        let page = bundle.report.pages.find((p) => p.url === sp.url);
+        if (!page) {
+          page = {
+            url: sp.url,
+            title: sp.title || sp.url,
+            viewport: sp.viewport || null,
+            visitedAt: sp.visitedAt || null,
+            annotations: [],
+            screenshots: []
+          };
+          bundle.report.pages.push(page);
+          minePages.add(page.url);
+        }
+        page.screenshots = page.screenshots || [];
+
+        for (const a of anns) {
+          page.annotations.push(Object.assign({}, a, {
+            review: a.review || { status: 'open', replies: [] }
+          }));
+          mineIds.add(a.id);
+
+          /* The picture too, so an addition arrives back looking like every
+           * other finding rather than a thinner one. */
+          const shot = (session.shots || []).find((s) => s.id === a.shotId);
+          if (!shot) continue;
+          const file = 'additions/' + shot.id + '.png';
+          page.screenshots.push(Object.assign({}, shot, {
+            file: file,
+            forAnnotation: a.id
+          }));
+          if (!bundle.shots.has(file)) {
+            try {
+              const src = await AT.store.getShot(shot.id);
+              if (src) bundle.shots.set(file, src);
+            } catch (_) { /* a missing picture is not worth losing the finding over */ }
+          }
+        }
+      }
+    }
+
+    bundle.items = AT.report.walkthrough(bundle.report);
+    if (cursor >= bundle.items.length) cursor = Math.max(0, bundle.items.length - 1);
+  }
+
+  function isMine(ann) {
+    return !!(ann && mineIds.has(ann.id));
+  }
+
+  /* Two-step, like the export view: the button renames itself and only the
+   * second click acts, disarming after a few seconds. */
+  function dangerButton(label, armedLabel, onConfirm) {
+    const b = button(label, 'quiet', async () => {
+      if (!b.dataset.armed) {
+        b.dataset.armed = '1';
+        b.textContent = armedLabel;
+        b.classList.add('armed');
+        setTimeout(() => {
+          delete b.dataset.armed;
+          b.textContent = label;
+          b.classList.remove('armed');
+        }, 4000);
+        return;
+      }
+      b.disabled = true;
+      await onConfirm();
+    });
+    return b;
+  }
+
+  /* Edit and delete, for the reviewer's OWN additions only. Somebody else's
+   * finding is theirs: you reply to it, you do not rewrite it - and a bundle
+   * that came back with its original findings quietly altered would be worse
+   * than useless. */
+  function renderMineControls(ann) {
+    const row = el('div', 'mine-actions');
+    /* The same rule the export view uses: edit what the user wrote. On a
+     * highlight that is the comment, because its text is quoted FROM the
+     * page. */
+    const field = ann.type === 'highlight' ? 'comment' : 'text';
+
+    row.appendChild(button('Edit', 'quiet', () => {
+      const ta = document.createElement('textarea');
+      ta.className = 'mine-edit';
+      ta.value = ann[field] || '';
+      ta.rows = 3;
+      let settled = false;
+      ta.addEventListener('blur', async () => {
+        if (settled) return;
+        settled = true;
+        await updateMine(ann.id, field, ta.value.trim());
+      });
+      ta.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+        settled = true;
+        render();
+      });
+      row.replaceChildren(ta);
+      ta.focus();
+    }));
+
+    row.appendChild(dangerButton('Delete', 'Really delete?', () => deleteMine(ann.id)));
+    return row;
+  }
+
+  /* Both write to the SESSION, not to the report: the session is where an
+   * addition actually lives, and mergeAdditions() rebuilds the report view
+   * from it.
+   *
+   * They then re-merge and re-render HERE rather than waiting for the storage
+   * event. The event does fire in the page that wrote it, so leaving it to
+   * that looked fine - but it made a change made on this page depend on a
+   * round trip through the browser to become visible, and on being merged
+   * again before Export replies reads the report. Doing it directly means the
+   * export cannot be one edit behind. The listener stays for changes made
+   * somewhere else, which is what it is actually for. */
+  async function refreshMine() {
+    await mergeAdditions();
+    saveState();
+    render();
+  }
+
+  async function updateMine(id, field, value) {
+    const session = await AT.store.getSession();
+    if (!session) return;
+    (session.pages || []).forEach((p) => {
+      const a = (p.annotations || []).find((x) => x.id === id);
+      if (a) a[field] = value;
+    });
+    await AT.store.setSession(session);
+    await refreshMine();
+  }
+
+  async function deleteMine(id) {
+    const session = await AT.store.getSession();
+    if (!session) return;
+    let shotId = null;
+    (session.pages || []).forEach((p) => {
+      const a = (p.annotations || []).find((x) => x.id === id);
+      if (a) shotId = a.shotId || null;
+      p.annotations = (p.annotations || []).filter((x) => x.id !== id);
+    });
+    /* Its screenshot goes only if nothing else points at it - autoCapture
+     * reuses a recent picture rather than taking the same one twice. */
+    if (shotId) {
+      const stillUsed = (session.pages || []).some((p) =>
+        (p.annotations || []).some((a) => a.shotId === shotId));
+      if (!stillUsed) {
+        session.shots = (session.shots || []).filter((s) => s.id !== shotId);
+      }
+    }
+    await AT.store.setSession(session);
+    await AT.store.sweepOrphanShots((session.shots || []).map((s) => s.id));
+    await refreshMine();
+  }
+
   /* --- loading a bundle -------------------------------------------------- */
 
   /* Where this bundle is on disk, or null.
@@ -264,6 +460,11 @@
       }
     }
 
+    /* Anything the reviewer already added to this bundle, before the first
+     * render, so it is simply part of the list rather than appearing a moment
+     * later. */
+    await mergeAdditions();
+
     /* Record that a bundle is OPEN, now, before anything else happens.
      *
      * saveState() otherwise only runs when the reviewer moves, marks or
@@ -278,33 +479,52 @@
 
   /* --- empty state / drop target ---------------------------------------- */
 
-  /* Showing the empty state IS this page saying no bundle is open, so make
-   * storage agree. Self-healing on purpose: it also clears a marker left by a
-   * crash, or by a version that did not know to clear one, so nobody ends up
-   * unable to start a session with no obvious way out. Fire-and-forget - the
-   * empty state must render whether or not storage cooperates. */
-  function markClosed() {
-    chrome.storage.local
-      .get(REVIEW_KEY)
-      .then((got) => {
-        const state = got[REVIEW_KEY];
-        if (!state || !state.open) return null;
-        state.open = false;
-        return chrome.storage.local.set({ [REVIEW_KEY]: state });
-      })
-      .catch(() => {});
+  /* Reads a remembered bundle back out of the working folder, by the name the
+   * review record kept. Returns false for every ordinary reason it cannot -
+   * no folder, permission not granted this session, file moved or renamed -
+   * because each of them ends the same way: ask the reviewer for the file. */
+  async function reopenFromFolder(name) {
+    if (!name || !AT.folder) return false;
+    try {
+      const status = await AT.folder.status();
+      if (status.permission !== 'granted') return false;
+      const files = await AT.folder.list();
+      if (!files.some((f) => f.name === name)) return false;
+      const file = await AT.folder.read(name);
+      if (!file) return false;
+      await openFile(file, true);
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
-  function renderEmpty(errorText) {
-    markClosed();
+  function renderEmpty(errorText, openState) {
     app.replaceChildren();
     const wrap = el('div', 'empty-state');
     const drop = el('div', 'drop');
 
-    drop.appendChild(el('h1', null, 'Open a review bundle'));
-    drop.appendChild(el('p', null,
-      'Drop an exported .zip here, or choose one. Everything stays on this machine.'));
-    drop.appendChild(button('Choose a ZIP…', 'go', () => fileInput.click()));
+    if (openState) {
+      /* A bundle is open but not loaded here. It used to mark itself closed
+       * and show the ordinary drop zone, which meant the popup said a bundle
+       * was open while this page showed no sign of one, and the reviewer's
+       * place in it vanished. Say which bundle, keep the progress, and offer
+       * both ways out. */
+      drop.appendChild(el('h1', null, 'Pick up where you left off'));
+      drop.appendChild(el('p', null,
+        'You have ' + (openState.bundleName || 'a bundle') + ' open. Your ' +
+        'replies and your place in it are kept here — but the ZIP itself ' +
+        'is not: a bundle is tens of megabytes of screenshots, and storing a ' +
+        'second copy of it would be a poor trade. Point at the same file ' +
+        'again to carry on.'));
+      drop.appendChild(button('Choose the ZIP…', 'go', () => fileInput.click()));
+      drop.appendChild(button('Close bundle', 'quiet', closeBundle));
+    } else {
+      drop.appendChild(el('h1', null, 'Open a review bundle'));
+      drop.appendChild(el('p', null,
+        'Drop an exported .zip here, or choose one. Everything stays on this machine.'));
+      drop.appendChild(button('Choose a ZIP…', 'go', () => fileInput.click()));
+    }
 
     if (errorText) drop.appendChild(el('p', 'err', errorText));
 
@@ -537,6 +757,9 @@
       row.appendChild(dot);
       row.appendChild(el('span', 'label',
         item.ann.text || item.ann.comment || AT.report.labelFor(item.ann)));
+      /* Marked in the list as well as the detail, so you can see at a glance
+       * which of a page's findings are the ones you added. */
+      if (isMine(item.ann)) row.appendChild(el('span', 'mine', 'yours'));
 
       row.addEventListener('click', () => goTo(i));
       rail.appendChild(row);
@@ -817,6 +1040,15 @@
       kind.appendChild(el('span', 'badge' + (ann.review.status === 'done' ? ' done' : ''),
         ann.review.status));
     }
+    if (isMine(ann)) {
+      /* Marked, because "what they asked me about" and "what I noticed while
+       * I was there" are different things to the person reading the reply -
+       * and because only your own entries can be edited or deleted here. */
+      const b = el('span', 'badge mine', 'yours');
+      b.title = 'You added this during the review. It goes back with your ' +
+        'replies, and you can edit or delete it until you export.';
+      kind.appendChild(b);
+    }
     if (ann.frame && ann.frame.path && ann.frame.path.length) {
       // Worth surfacing on its own account: "it's inside the embedded checkout"
       // is often the most useful fact about a finding.
@@ -828,6 +1060,7 @@
     wrap.appendChild(kind);
 
     wrap.appendChild(el('div', 'quote', ann.text || '(no text captured)'));
+    if (isMine(ann)) wrap.appendChild(renderMineControls(ann));
 
     if (ann.comment) {
       const c = el('div', 'comment');
@@ -1073,6 +1306,9 @@
      * megabytes of PNG and none of it is needed on the live page. */
     await chrome.storage.local.set({
       at_review_live: {
+        /* Named so a session started from the walkthrough can say which bundle
+         * it belongs to - see AT.session.start({ reviewOf }). */
+        bundleName: bundle.name,
         items: bundle.items.map((it) => ({
           ann: it.ann,
           pageUrl: it.page.url,
@@ -1245,6 +1481,17 @@
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local' || !bundle) return;
 
+    /* The reviewer marked something of their own on the live page. It has to
+     * appear here without a reload, because the whole point is that they are
+     * working on both at once. */
+    if (changes[AT.store.SESSION_KEY]) {
+      mergeAdditions().then(() => {
+        saveState();
+        render();
+      });
+      return;
+    }
+
     /* Replies posted from the live page. Merged rather than reloaded: this
      * page may have half-typed drafts and a scroll position worth keeping. */
     if (changes[REVIEW_KEY] && !selfWrite) {
@@ -1299,6 +1546,22 @@
       identityName = '';
     }
 
-    renderEmpty();
+    /* A bundle left open last time is reopened rather than forgotten.
+     *
+     * The working folder makes this genuinely possible: the file is still
+     * sitting there under the name the record remembers, so it can be read
+     * back without a dialog and loadState() restores the replies, the
+     * statuses and the cursor with it. A bundle opened through a file dialog
+     * cannot be - the page is never told where that file was - so it falls
+     * back to naming it and asking. Either way the reviewer is told what is
+     * open and can close it. */
+    let openState = null;
+    try {
+      const state = await loadState();
+      if (state && state.open) openState = state;
+    } catch (_) { /* unreadable storage must not stop the page coming up */ }
+
+    if (openState && (await reopenFromFolder(openState.bundleName))) return;
+    renderEmpty(null, openState);
   })();
 })();

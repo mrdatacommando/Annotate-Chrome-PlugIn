@@ -259,12 +259,22 @@
      * a throw because being blocked is an ordinary answer here, not a fault -
      * the popup disables the button and says why, and this is the backstop
      * for every other path in. */
-    async start(author) {
+    async start(author, opts) {
       return enqueue(async () => {
         const existing = await AT.store.getSession();
         if (existing && existing.active) return existing;
-        if (await AT.session.reviewOpen()) return null;
+
+        /* An open bundle blocks an ORDINARY session - that is what stops
+         * somebody else's findings and your own recording being filed
+         * together. A session started FROM the review is the opposite case:
+         * it is deliberately attached to that bundle, and everything it
+         * records goes back inside the reply. So it is allowed, and carries
+         * the bundle's name to say what it belongs to. */
+        const reviewOf = (opts && opts.reviewOf) || null;
+        if (!reviewOf && (await AT.session.reviewOpen())) return null;
+
         const session = {
+          reviewOf: reviewOf,
           id: newId('s'),
           startedAt: new Date().toISOString(),
           endedAt: null,

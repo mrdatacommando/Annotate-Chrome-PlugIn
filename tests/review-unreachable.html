@@ -1,0 +1,126 @@
+<!doctype html>
+<!-- Annotate Tool - Copyright (C) 2026 Mark Van de Velde
+     SPDX-License-Identifier: GPL-3.0-only
+     This program comes with ABSOLUTELY NO WARRANTY. See LICENSE for terms. -->
+<html>
+<head><meta charset="utf-8"><title>Annotate Tool - an open bundle that cannot be reopened</title></head>
+<body>
+
+<div id="app"></div>
+<input type="file" id="file" hidden>
+<div id="checks">pending</div>
+
+<script>
+  window.__errors = [];
+  window.onerror = function (m, s, l, c) {
+    window.__errors.push(m + ' @' + (s || '?').split('/').pop() + ':' + l + ':' + c);
+  };
+
+  const mem = {};
+  window.chrome = {
+    storage: {
+      local: {
+        async get(k) {
+          if (k === null) return JSON.parse(JSON.stringify(mem));
+          const keys = Array.isArray(k) ? k : [k];
+          const out = {};
+          keys.forEach((key) => { if (key in mem) out[key] = JSON.parse(JSON.stringify(mem[key])); });
+          return out;
+        },
+        async set(o) { Object.keys(o).forEach((k) => { mem[k] = JSON.parse(JSON.stringify(o[k])); }); },
+        async remove(keys) { (Array.isArray(keys) ? keys : [keys]).forEach((k) => { delete mem[k]; }); }
+      },
+      onChanged: { addListener() {} }
+    },
+    runtime: { id: 'test', sendMessage: async () => ({ ok: true }), lastError: null },
+    downloads: { download: async () => 1 }
+  };
+
+  /* Open, with review work in it - and opened from a file dialog, so there is
+   * no folder to read it back from. */
+  mem.at_review = {
+    bundleName: 'from-a-dialog.zip',
+    sessionId: 's_them',
+    open: true,
+    cursor: 2,
+    drafts: { a1: 'half-typed reply' },
+    statuses: { a1: { status: 'done', replies: [], reviewedAt: '2026-09-09T10:00:00.000Z' } },
+    items: []
+  };
+</script>
+
+<script src="../core/store.js"></script>
+<script src="../core/session.js"></script>
+<script src="../core/zip.js"></script>
+<script src="../core/report.js"></script>
+<script src="../core/unzip.js"></script>
+<script src="../core/lens.js"></script>
+<script src="../core/folder.js"></script>
+
+<script>
+  /* No working folder. Stubbed rather than left real because the real module
+   * keeps its handle in IndexedDB, which - measured - never fires an event at
+   * all on file://, so the page would hang instead of failing. */
+  AT.folder = {
+    async status() { return { permission: 'missing', name: null }; },
+    async list() { return []; },
+    async read() { return null; },
+    async grant() { return 'prompt'; },
+    describeError(e) { return { text: String(e) }; }
+  };
+</script>
+
+<script src="../review/review.js"></script>
+
+<script>
+(async function () {
+  const lines = [];
+  function flush() { document.getElementById('checks').textContent = lines.join('\n'); }
+  function check(label, ok, detail) {
+    lines.push((ok ? 'PASS ' : 'FAIL ') + label + (detail ? ' :: ' + detail : ''));
+    flush();
+  }
+  const tick = (ms) => new Promise((r) => setTimeout(r, ms || 40));
+  const app = document.getElementById('app');
+  const btn = (label) => Array.from(document.querySelectorAll('button'))
+    .find((b) => b.textContent === label);
+
+  try {
+    for (let i = 0; i < 60 && app.textContent.length < 20; i++) await tick(50);
+    await tick(120);
+
+    check('no load-time errors', window.__errors.length === 0, window.__errors.join(' | '));
+
+    /* The reported bug: the popup said a bundle was open, and this page said
+     * nothing was - because showing the empty state used to mark it closed.
+     * The reviewer lost their place and never saw what was open. */
+    check('the page says which bundle is open',
+      app.textContent.indexOf('from-a-dialog.zip') > -1,
+      JSON.stringify(app.textContent.slice(0, 90)));
+    check('it does NOT silently decide nothing is open',
+      mem.at_review.open === true, JSON.stringify(mem.at_review.open));
+    check('the progress is still held',
+      mem.at_review.cursor === 2 && !!mem.at_review.drafts.a1);
+
+    check('it offers the file again', !!btn('Choose the ZIP…'));
+    check('and a way to put it down', !!btn('Close bundle'));
+
+    btn('Close bundle').click();
+    for (let i = 0; i < 40 && mem.at_review.open !== false; i++) await tick(50);
+
+    check('closing lowers the flag', mem.at_review.open === false,
+      JSON.stringify(mem.at_review.open));
+    check('and only then does the ordinary drop zone appear',
+      app.textContent.indexOf('Open a review bundle') > -1,
+      JSON.stringify(app.textContent.slice(0, 70)));
+    check('the replies survived being closed',
+      !!(mem.at_review.statuses && mem.at_review.statuses.a1));
+  } catch (e) {
+    lines.push('FAIL threw after ' + lines.length + ' checks :: ' +
+      (e && e.message ? e.message : String(e)));
+  }
+  flush();
+})();
+</script>
+</body>
+</html>

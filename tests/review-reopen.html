@@ -1,0 +1,261 @@
+<!doctype html>
+<!-- Annotate Tool - Copyright (C) 2026 Mark Van de Velde
+     SPDX-License-Identifier: GPL-3.0-only
+     This program comes with ABSOLUTELY NO WARRANTY. See LICENSE for terms. -->
+<html>
+<head><meta charset="utf-8"><title>Annotate Tool - reopening an open bundle</title></head>
+<body>
+
+<div id="app"></div>
+<input type="file" id="file" hidden>
+<div id="checks">pending</div>
+
+<script>
+  window.__errors = [];
+  window.onerror = function (m, s, l, c) {
+    window.__errors.push(m + ' @' + (s || '?').split('/').pop() + ':' + l + ':' + c);
+  };
+
+  const mem = {};
+  window.chrome = {
+    storage: {
+      local: {
+        async get(k) {
+          if (k === null) return JSON.parse(JSON.stringify(mem));
+          const keys = Array.isArray(k) ? k : [k];
+          const out = {};
+          keys.forEach((key) => { if (key in mem) out[key] = JSON.parse(JSON.stringify(mem[key])); });
+          return out;
+        },
+        async set(o) { Object.keys(o).forEach((k) => { mem[k] = JSON.parse(JSON.stringify(o[k])); }); },
+        async remove(keys) { (Array.isArray(keys) ? keys : [keys]).forEach((k) => { delete mem[k]; }); }
+      },
+      onChanged: { addListener() {} }
+    },
+    runtime: { id: 'test', sendMessage: async () => ({ ok: true }), lastError: null },
+    downloads: { download: async () => 1 }
+  };
+
+  /* A bundle left open, with review work in it that must survive. */
+  mem.at_review = {
+    bundleName: 'annotate-session-2026-09-08-0900.zip',
+    sessionId: 's_them',
+    open: true,
+    cursor: 0,
+    drafts: {},
+    statuses: {
+      a1: { status: 'done', replies: [{ author: 'Mark', at: '2026-09-09T10:00:00.000Z', text: 'Checking with design' }], reviewedAt: '2026-09-09T10:00:00.000Z' }
+    },
+    items: []
+  };
+  mem.at_identity = { name: 'Mark' };
+
+  /* A session the reviewer started FROM this bundle's walkthrough: findings
+   * of their own, on the same site, to go back with the replies. */
+  mem.at_session = {
+    id: 's_mine', author: 'Mark', active: true,
+    reviewOf: 'annotate-session-2026-09-08-0900.zip',
+    startedAt: '2026-09-09T11:00:00.000Z', endedAt: null,
+    pages: [{
+      url: 'https://example.com/pricing', title: 'Pricing',
+      viewport: { w: 1280, h: 800, dpr: 2 }, visitedAt: '2026-09-09T11:00:00.000Z',
+      annotations: [{
+        id: 'mine1', type: 'note', color: '#ff8a3d', author: 'Mark',
+        text: 'The annual toggle is mislabelled', comment: '', unplaced: false,
+        createdAt: '2026-09-09T11:01:00.000Z',
+        anchor: { kind: 'point', selector: 'body', offset: { x: 4, y: 9 } },
+        shotId: 'sh_mine', rect: { x: 40, y: 60, w: 200, h: 60 }
+      }]
+    }],
+    shots: [{ id: 'sh_mine', pageUrl: 'https://example.com/pricing', note: '' }]
+  };
+  mem.at_shot_sh_mine =
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ' +
+    'AAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+</script>
+
+<script src="../core/store.js"></script>
+<script src="../core/session.js"></script>
+<script src="../core/zip.js"></script>
+<script src="../core/report.js"></script>
+<script src="../core/unzip.js"></script>
+<script src="../core/lens.js"></script>
+<script src="../core/folder.js"></script>
+
+<script>
+  /* A working folder with that exact bundle sitting in it. Replaces the real
+   * module AFTER it has loaded and BEFORE review.js boots, because the real
+   * one keeps its directory handle in IndexedDB - which, measured, never even
+   * fires an event on file:// and would hang the page rather than fail. */
+  (function () {
+    const session = {
+      id: 's_them', author: 'Sam', startedAt: '2026-09-08T09:00:00.000Z',
+      endedAt: '2026-09-08T09:30:00.000Z', active: false,
+      pages: [{
+        url: 'https://example.com/pricing', title: 'Pricing',
+        viewport: { w: 1280, h: 800, dpr: 2 }, visitedAt: '2026-09-08T09:01:00.000Z',
+        annotations: [{
+          id: 'a1', type: 'highlight', color: '#f4c430', author: 'Sam',
+          text: 'Free forever', comment: 'Not true', unplaced: false,
+          createdAt: '2026-09-08T09:02:00.000Z',
+          anchor: { kind: 'quote', selector: 'main > p',
+                    quote: { prefix: 'is ', exact: 'Free forever', suffix: ' for' } },
+          shotId: null, rect: { x: 300, y: 1250, w: 90, h: 18 }
+        }]
+      }],
+      shots: []
+    };
+    const built = AT.report.build(session, new Map());
+    const blob = AT.zip.create(built.files);
+    const name = 'annotate-session-2026-09-08-0900.zip';
+
+    window.__folderReads = [];
+    AT.folder = {
+      async status() { return { permission: 'granted', name: 'Reviews' }; },
+      async list() { return [{ name: name }]; },
+      async read(n) {
+        window.__folderReads.push(n);
+        return new File([blob], n, { type: 'application/zip' });
+      },
+      async grant() { return 'granted'; },
+      describeError(e) { return { text: String(e) }; }
+    };
+  })();
+</script>
+
+<script src="../review/review.js"></script>
+
+<script>
+(async function () {
+  const lines = [];
+  function flush() { document.getElementById('checks').textContent = lines.join('\n'); }
+  function check(label, ok, detail) {
+    lines.push((ok ? 'PASS ' : 'FAIL ') + label + (detail ? ' :: ' + detail : ''));
+    flush();
+  }
+  const tick = (ms) => new Promise((r) => setTimeout(r, ms || 40));
+  const app = document.getElementById('app');
+
+  try {
+    for (let i = 0; i < 60 && app.textContent.indexOf('Free forever') === -1; i++) {
+      await tick(50);
+    }
+
+    check('no load-time errors', window.__errors.length === 0, window.__errors.join(' | '));
+
+    /* The point of the whole fix: a bundle recorded as open is picked up
+     * again, rather than the page quietly deciding nothing is open. */
+    check('the open bundle was read back from the working folder',
+      window.__folderReads.indexOf('annotate-session-2026-09-08-0900.zip') > -1,
+      JSON.stringify(window.__folderReads));
+    check('and it is on screen, not the drop zone',
+      app.textContent.indexOf('Free forever') > -1 &&
+      app.textContent.indexOf('Open a review bundle') === -1,
+      JSON.stringify(app.textContent.slice(0, 70)));
+
+    check('the review work came back with it',
+      app.textContent.indexOf('Checking with design') > -1,
+      'the reply typed before closing is missing');
+
+    check('and it is still recorded as open',
+      mem.at_review && mem.at_review.open === true,
+      JSON.stringify(mem.at_review && mem.at_review.open));
+
+    /* --- findings the reviewer added themselves -------------------------- */
+    {
+      /* Merged into the list beside the findings they were sent, so one pass
+       * through a page covers both. */
+      check('an addition of your own is in the list',
+        app.textContent.indexOf('The annual toggle is mislabelled') > -1,
+        JSON.stringify(app.textContent.slice(0, 120)));
+      check('and it is marked as yours rather than passing for theirs',
+        app.textContent.indexOf('yours') > -1);
+
+      /* Step onto it, so the detail pane is showing the addition. */
+      const row = Array.from(document.querySelectorAll('.rail .row'))
+        .find((r) => r.textContent.indexOf('The annual toggle') > -1);
+      check('it can be stepped to like any other finding', !!row);
+      row.click();
+      await tick(120);
+
+      const edit = Array.from(document.querySelectorAll('.mine-actions button'))
+        .find((b) => b.textContent === 'Edit');
+      check('your own entry offers Edit', !!edit);
+      edit.click();
+      await tick(60);
+      const ta = document.querySelector('textarea.mine-edit');
+      check('editing is pre-filled with what you wrote',
+        ta && ta.value === 'The annual toggle is mislabelled', ta && ta.value);
+      ta.value = 'The annual toggle is mislabelled on mobile';
+      ta.dispatchEvent(new Event('blur'));
+      await tick(200);
+
+      const mine = mem.at_session.pages[0].annotations.find((a) => a.id === 'mine1');
+      check('the edit is written back to the session that owns it',
+        mine.text === 'The annual toggle is mislabelled on mobile', mine.text);
+
+      /* The findings you were SENT are not yours to rewrite. */
+      const theirRow = Array.from(document.querySelectorAll('.rail .row'))
+        .find((r) => r.textContent.indexOf('Free forever') > -1);
+      theirRow.click();
+      await tick(120);
+      check('somebody else\'s finding offers no Edit or Delete',
+        document.querySelectorAll('.mine-actions').length === 0);
+    }
+
+    /* --- what actually leaves the machine --------------------------------- */
+    {
+      /* The real test of the merge: an addition has to be IN the exported
+       * reply bundle, not just on screen. Caught by reading the bytes that
+       * were handed to the downloader. */
+      let captured = null;
+      chrome.downloads.download = async (opts) => { captured = opts.url; return 1; };
+
+      const exportBtn = Array.from(document.querySelectorAll('button'))
+        .find((b) => b.textContent === 'Export replies');
+      check('Export replies is offered', !!exportBtn);
+      exportBtn.click();
+      for (let i = 0; i < 60 && !captured; i++) await tick(50);
+      check('the export produced a file', !!captured);
+
+      const bytes = new Uint8Array(await (await fetch(captured)).arrayBuffer());
+      const entries = await AT.unzip.read(bytes);
+      const key = Array.from(entries.keys()).find((k) => k.endsWith('report.json'));
+      const report = JSON.parse(AT.unzip.text(entries.get(key)));
+      const all = report.pages.reduce((acc, p) => acc.concat(p.annotations || []), []);
+
+      check('the exported bundle still carries their finding',
+        all.some((a) => a.text === 'Free forever'),
+        all.map((a) => a.text).join(' | '));
+      check('AND the one you added during the review',
+        all.some((a) => a.text === 'The annual toggle is mislabelled on mobile'),
+        all.map((a) => a.text).join(' | '));
+      check('your addition is attributed to you',
+        (all.find((a) => a.id === 'mine1') || {}).author === 'Mark');
+      check('and its screenshot went with it',
+        Array.from(entries.keys()).some((k) => /screenshots\/.+\.png$/.test(k)),
+        Array.from(entries.keys()).join(' | '));
+    }
+
+    /* Closing from here must still work, or the reviewer is stuck the other
+     * way round - holding a bundle they cannot put down. */
+    const close = Array.from(document.querySelectorAll('button'))
+      .find((b) => b.textContent === 'Close bundle');
+    check('Close bundle is reachable', !!close);
+    if (close) {
+      close.click();
+      for (let i = 0; i < 40 && mem.at_review.open !== false; i++) await tick(50);
+      check('closing it lowers the flag', mem.at_review.open === false,
+        JSON.stringify(mem.at_review.open));
+      check('and the replies are still kept',
+        !!(mem.at_review.statuses && mem.at_review.statuses.a1));
+    }
+  } catch (e) {
+    lines.push('FAIL threw after ' + lines.length + ' checks :: ' +
+      (e && e.message ? e.message : String(e)));
+  }
+  flush();
+})();
+</script>
+</body>
+</html>

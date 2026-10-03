@@ -120,6 +120,18 @@
     check('and no session was written',
       (await AT.store.getSession()) == null);
 
+    /* But a session started FROM the review is the opposite case: it is
+     * deliberately attached to that bundle, and what it records goes back
+     * inside the reply rather than into a bundle of its own. */
+    const scoped = await AT.session.start('Mark', { reviewOf: 'theirs.zip' });
+    check('a session scoped to the open bundle IS allowed', !!scoped);
+    check('and it says which bundle it belongs to',
+      scoped && scoped.reviewOf === 'theirs.zip', scoped && scoped.reviewOf);
+    await AT.session.discard();
+    check('a plain session is still refused afterwards',
+      (await AT.session.start('Mark')) === null);
+    await AT.store.clearSession();
+
     /* Closing keeps the record - it also holds the reviewer's unexported
      * replies - and only lowers the flag. */
     mem.at_review.open = false;

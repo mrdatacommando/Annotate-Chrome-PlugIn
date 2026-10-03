@@ -53,6 +53,15 @@
       subEl.textContent = 'Session running since ' +
         new Date(session.startedAt).toLocaleTimeString();
 
+      if (session.reviewOf) {
+        subEl.textContent = 'Adding to a review';
+        bodyEl.appendChild(
+          el('div', 'box',
+             'You are marking up pages while reviewing ' + session.reviewOf +
+             '. What you mark goes back with your replies — edit or ' +
+             'delete it on the review page before you export.')
+        );
+      }
       bodyEl.appendChild(stat('Annotating as', session.author || 'Unknown'));
       bodyEl.appendChild(stat('Pages', counts.pages));
       bodyEl.appendChild(stat('Annotations', counts.annotations));
@@ -132,14 +141,30 @@
       }
       bodyEl.appendChild(bridgeBox);
 
-      const end = el('button', 'stop', 'End session & export');
-      end.addEventListener('click', async () => {
-        end.disabled = true;
-        await AT.session.end();
-        await chrome.runtime.sendMessage({ type: 'AT_OPEN_VIEWER' });
-        window.close();
-      });
-      bodyEl.appendChild(end);
+      /* A session started from a review belongs to that bundle: what it
+       * records goes back inside the reply, not into a bundle of its own. So
+       * it does not end into the export view - that would offer to export a
+       * second bundle containing the same findings. It stops, and the review
+       * page carries them. */
+      if (session.reviewOf) {
+        const stop = el('button', 'stop', 'Stop adding');
+        stop.addEventListener('click', async () => {
+          stop.disabled = true;
+          await AT.session.end();
+          await chrome.runtime.sendMessage({ type: 'AT_OPEN_REVIEW' });
+          window.close();
+        });
+        bodyEl.appendChild(stop);
+      } else {
+        const end = el('button', 'stop', 'End session & export');
+        end.addEventListener('click', async () => {
+          end.disabled = true;
+          await AT.session.end();
+          await chrome.runtime.sendMessage({ type: 'AT_OPEN_VIEWER' });
+          window.close();
+        });
+        bodyEl.appendChild(end);
+      }
 
       const discard = el('button', 'quiet', 'Discard session');
       discard.addEventListener('click', async () => {
@@ -213,12 +238,6 @@
            'starting a session of your own, so your annotations are not ' +
            'recorded against somebody else’s findings.')
       );
-      const toReview = el('button', null, 'Go to the review page');
-      toReview.addEventListener('click', async () => {
-        await chrome.runtime.sendMessage({ type: 'AT_OPEN_REVIEW' });
-        window.close();
-      });
-      bodyEl.appendChild(toReview);
     }
     start.addEventListener('click', async () => {
       const name = nameInput.value.trim();
@@ -242,9 +261,15 @@
     });
     bodyEl.appendChild(start);
 
-    // Review mode is reachable with no session of your own, because the person
-    // reviewing a bundle is usually not the person who made it.
-    const review = el('button', null, 'Open a review bundle…');
+    /* Review mode is reachable with no session of your own, because the person
+     * reviewing a bundle is usually not the person who made it.
+     *
+     * The label changes when one is already open: being told a bundle is open
+     * and then offered "Open a review bundle…" reads as though the only way
+     * on is to open a second one, when what you actually want is the one you
+     * already have. */
+    const review = el('button', null,
+      reviewOpen ? 'Go to review bundle' : 'Open a review bundle…');
     review.addEventListener('click', async () => {
       await chrome.runtime.sendMessage({ type: 'AT_OPEN_REVIEW' });
       window.close();

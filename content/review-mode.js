@@ -37,6 +37,9 @@
   let index = 0;
   let expanded = false;
   let identityName = '';
+  /* Whether a review-scoped session is running: the reviewer is adding
+   * findings of their own, not just replying to somebody else's. */
+  let annotating = false;
 
   const CSS = `
 :host { all: initial; }
@@ -378,9 +381,15 @@
     return pane;
   }
 
+  /* What the last caller that actually knew told us, so a re-render triggered
+   * from somewhere else - a session starting, say - does not have to guess and
+   * accidentally hide the "not found here" warning. */
+  let lastPlaced;
+
   /* placed: whether the current annotation could be drawn on this page.
    * Passed in rather than recomputed, since only the caller knows. */
   function render(placed) {
+    if (placed !== undefined) lastPlaced = placed;
     if (!shadow) return;
     const previous = shadow.querySelector('.dock');
     if (previous) previous.remove();
@@ -434,6 +443,42 @@
       render(placed);
     });
     hud.appendChild(details);
+
+    /* Add findings of your own while you are here.
+     *
+     * Reviewing a bundle and noticing something nobody has raised yet are the
+     * same sitting, and until now the second one had nowhere to go: the
+     * session that records annotations is exactly what a loaded bundle
+     * blocks. Starting it FROM here attaches it to this bundle instead, so
+     * the tools, the screenshots and the restore-after-reload all work as
+     * they normally do, and what you mark comes back inside the reply. */
+    if (!annotating) {
+      const add = el('button', 'btn', 'Add your own');
+      add.type = 'button';
+      add.title = identityName
+        ? 'Mark up this page yourself. Your findings go back with your replies.'
+        : 'Set your name on the review page first.';
+      add.disabled = !identityName;
+      add.addEventListener('click', async () => {
+        add.disabled = true;
+        const started = await AT.session.start(identityName, {
+          reviewOf: (live && live.bundleName) || null
+        });
+        if (!started) {
+          add.disabled = false;
+          return;
+        }
+        annotating = true;
+        render(placed);
+      });
+      hud.appendChild(add);
+    } else {
+      const mine = el('span', 'warn', 'adding your own — use the toolbar');
+      mine.title =
+        'The annotation toolbar is live on this page. What you mark is ' +
+        'attached to this bundle and comes back with your replies.';
+      hud.appendChild(mine);
+    }
 
     const back = el('button', 'btn primary', 'Back to list');
     back.type = 'button';
@@ -494,6 +539,28 @@
     } catch (_) {
       identityName = '';
     }
+
+    /* Is a review-scoped session already running? The reviewer may have
+     * started one, navigated, and come back - the HUD has to come up showing
+     * that rather than offering to start a second. */
+    try {
+      const open = await AT.store.getSession();
+      annotating = !!(open && open.active && open.reviewOf);
+    } catch (_) {
+      annotating = false;
+    }
+
+    /* The session can also be ended from the popup or the review page while
+     * this HUD is on screen, in which case the bar has to go back to offering
+     * to start one. */
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local' || !changes[AT.store.SESSION_KEY]) return;
+      const next = changes[AT.store.SESSION_KEY].newValue;
+      const now = !!(next && next.active && next.reviewOf);
+      if (now === annotating) return;
+      annotating = now;
+      if (host) render(lastPlaced);
+    });
 
     syncToPage();
 
