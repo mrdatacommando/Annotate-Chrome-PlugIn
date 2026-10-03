@@ -42,6 +42,11 @@
   let bar = null;
   let countEl = null;
   let aiEl = null;
+  let endBtn = null;
+  /* The bundle this session is attached to, when it was started from a review.
+   * Changes what ending it means: those annotations belong in the reply, not
+   * in an export of their own. */
+  let reviewTarget = null;
   let cursorStyle = null;
 
   let armed = null; // id of the armed tool, or null
@@ -88,6 +93,12 @@
   pointer-events: auto; user-select: none;
   font-size: 13px; line-height: 1;
 }
+/* Clear of the review walkthrough bar, which is docked bottom-centre and up to
+   720px wide - at anything short of a very wide window the two overlap, and
+   the toolbar you just asked for comes up underneath the one already there.
+   Raised rather than moved sideways: the toolbar is draggable, and shifting it
+   horizontally would fight whatever position the user had already chosen. */
+.bar.above-review { bottom: 76px; }
 .bar[hidden] { display: none !important; }
 .bar.dragging { opacity: .82; }
 
@@ -341,7 +352,7 @@
     aiEl.appendChild(el('span', 'ai-text', 'AI access'));
     bar.appendChild(aiEl);
 
-    const endBtn = el('button', 'btn primary');
+    endBtn = el('button', 'btn primary');
     endBtn.type = 'button';
     endBtn.title = 'End the session and open the export view';
     endBtn.innerHTML = ICONS.end + '<span>End &amp; Export</span>';
@@ -668,9 +679,36 @@
       }
     },
 
+    /* What this session is attached to, and what the toolbar should therefore
+     * offer. A session started from a review ends back INTO that review: its
+     * annotations are part of the bundle being replied to, and offering to
+     * export them as a bundle of their own would produce a second copy of
+     * findings that are already going somewhere. */
+    setReviewTarget(name) {
+      reviewTarget = name || null;
+      if (!endBtn) return;
+      endBtn.innerHTML = ICONS.end + '<span>' +
+        (reviewTarget ? 'Back to review' : 'End &amp; Export') + '</span>';
+      endBtn.title = reviewTarget
+        ? 'Stop adding and go back to the review. What you marked stays part ' +
+          'of the bundle you are reviewing.'
+        : 'End the session and open the export view';
+    },
+
+    /* Lifts the toolbar clear of the review walkthrough bar. */
+    setAside(on) {
+      if (bar) bar.classList.toggle('above-review', !!on);
+    },
+
+    isArmed() {
+      return !!armed;
+    },
+
     async endSession() {
       await AT.session.end();
-      await chrome.runtime.sendMessage({ type: 'AT_OPEN_VIEWER' });
+      await chrome.runtime.sendMessage({
+        type: reviewTarget ? 'AT_OPEN_REVIEW' : 'AT_OPEN_VIEWER'
+      });
     },
 
     async refreshCount() {
@@ -949,7 +987,9 @@
 
     mount();
 
-    const active = await AT.session.isActive();
+    const current = await AT.store.getSession();
+    const active = !!(current && current.active);
+    api.setReviewTarget(current && current.reviewOf);
     await api.setActive(active);
     if (active) await api.restoreAll();
 
@@ -959,6 +999,7 @@
       if (area !== 'local' || !changes[AT.store.SESSION_KEY]) return;
       const next = changes[AT.store.SESSION_KEY].newValue;
       const nowActive = !!(next && next.active);
+      api.setReviewTarget(next && next.reviewOf);
       if (nowActive !== activeSession) {
         await api.setActive(nowActive);
         if (nowActive) await api.restoreAll();

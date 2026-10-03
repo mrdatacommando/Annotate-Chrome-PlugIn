@@ -10,7 +10,7 @@ everything together.
 ## Download
 
 **Just want to use it?** Grab
-[`annotate-tool-v1.18.0.zip`](releases/annotate-tool-v1.18.0.zip) from the
+[`annotate-tool-v1.19.0.zip`](releases/annotate-tool-v1.19.0.zip) from the
 `releases/` folder, or from the [latest release](../../releases/latest) page,
 then follow **Install** below. Nothing else in this repository is needed to run
 the extension — the source is here for people who want to read or change it.
@@ -20,7 +20,7 @@ the extension — the source is here for people who want to read or change it.
 Chrome blocks side-loaded `.crx` files outside the Web Store, so **Load
 unpacked** is the only reliable install path.
 
-1. Unzip `annotate-tool-v1.18.0.zip` somewhere permanent (Chrome reads the folder on
+1. Unzip `annotate-tool-v1.19.0.zip` somewhere permanent (Chrome reads the folder on
    every launch — if you delete it, the extension disappears).
 2. Open `chrome://extensions`.
 3. Turn on **Developer mode** (top right).
@@ -243,10 +243,21 @@ offers **Close bundle** so you are never holding a bundle you cannot put down.
 ### Adding findings of your own
 
 Reviewing a bundle and noticing something nobody raised yet happen in the same
-sitting. From the walkthrough bar (**Open live**), **Add your own** starts a
+sitting. From the walkthrough bar (**Open live**), **Add annotations** starts a
 session attached to that bundle — so the full toolbar is live on the page and
 highlights, notes, boxes, arrows and screenshots all work exactly as they
-normally do.
+normally do. The toolbar sits clear of the walkthrough bar rather than
+underneath it, and it offers **Back to review** instead of *End & Export*:
+what you mark belongs in the bundle you are replying to, not in an export of
+its own.
+
+**Every finding on the page appears while you are adding**, not just the one
+you were stepped to — you cannot sensibly mark a page up without seeing what
+has already been raised on it. Theirs stay read-only. Click one and it becomes
+the current item with the discussion open, ready to reply. (An armed tool
+wins: with Highlight armed, clicking makes a highlight of your own. Press
+`Esc` first to select one of theirs.) Step through normally and it goes back
+to one at a time.
 
 What you mark is merged into the review list beside the findings you were
 sent, badged **yours**, and goes back inside your reply when you **Export
@@ -455,7 +466,7 @@ chrome.exe --headless --disable-gpu --allow-file-access-from-files \
 | `roundtrip.html` | Export → read → review → re-export, and v1 compatibility |
 | `integration.html` | Full stack: create, capture, reload-restore, unplaced, region highlights, popover saves, arrow geometry |
 
-713 checks at time of writing.
+724 checks at time of writing.
 
 **Not covered by the harnesses**, because they need a real extension context:
 `tabs.captureVisibleTab`, `chrome.downloads`, and cross-tab session sync. Those

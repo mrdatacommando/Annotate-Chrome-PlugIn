@@ -230,6 +230,87 @@
     return placed;
   }
 
+  /* Every OTHER finding on this page, drawn alongside the one being stepped to.
+   *
+   * Only while the reviewer is adding annotations of their own. The
+   * walkthrough proper is a guided one-at-a-time pass and showing everything
+   * would take that away; while adding, the opposite is what you need - you
+   * cannot sensibly mark something up without seeing what has already been
+   * raised on the same page.
+   */
+  function placeOthers() {
+    if (!annotating) return;
+    items.forEach((item, i) => {
+      if (i === index) return;
+      if (!samePage(item.pageUrl, location.href)) return;
+      /* Idempotent on purpose. Starting to annotate reaches here twice - once
+       * from the button, once from the storage change that starting the
+       * session causes - and more paths will arrive later. Drawing the same
+       * finding twice leaves two stacked copies and two click handlers. */
+      if (alreadyDrawn(item.ann.id)) return;
+      if (!place(item.ann)) return;
+      bindReviewClick(item.ann.id, i);
+    });
+  }
+
+  function alreadyDrawn(id) {
+    const sel = '[data-at-review="1"][data-at-id="' + esc(id) + '"]';
+    if (document.querySelector('at-hl' + sel)) return true;
+    const ov = overlayContext();
+    if (ov && ov.layer && ov.layer.querySelector(sel)) return true;
+    if (ov && ov.svg && ov.svg.querySelector(sel)) return true;
+    return false;
+  }
+
+  /* Back to the walkthrough's normal state: only the finding being stepped to.
+   * Everything is cleared and the current one re-placed, rather than trying to
+   * pick the others back out - clearDrawn only ever touches review-drawn
+   * nodes, so the reviewer's own annotations are untouched either way. */
+  function clearOthers() {
+    clearDrawn();
+    const item = items[index];
+    if (!item || !samePage(item.pageUrl, location.href)) return;
+    const ok = place(item.ann);
+    render(ok);
+  }
+
+  /* Their findings are read-only here.
+   *
+   * place() goes through the TOOL, which wires its own editor - and that
+   * editor writes through AT.session, where these annotations do not exist.
+   * Left alone it would open, accept an edit and save nothing. So the click is
+   * taken first, in the capture phase, and stopped before it reaches the
+   * editor; what it does instead is select the finding and open the
+   * discussion, which is the thing you actually want to do with somebody
+   * else's note. */
+  function bindReviewClick(id, i) {
+    const ov = overlayContext();
+    const nodes = [];
+    document.querySelectorAll('at-hl[data-at-id="' + esc(id) + '"]')
+      .forEach((n) => nodes.push(n));
+    if (ov && ov.layer) {
+      ov.layer.querySelectorAll('[data-at-id="' + esc(id) + '"]')
+        .forEach((n) => nodes.push(n));
+    }
+    if (ov && ov.svg) {
+      ov.svg.querySelectorAll('[data-at-id="' + esc(id) + '"]')
+        .forEach((n) => nodes.push(n));
+    }
+    nodes.forEach((n) => {
+      n.style.cursor = 'pointer';
+      n.addEventListener('click', (e) => {
+        /* An armed tool wins. A tool that did what it says everywhere except
+         * on top of somebody else's mark would be the harder thing to predict,
+         * and Esc disarms it in one key. */
+        if (ov && ov.isArmed && ov.isArmed()) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        expanded = true;
+        goTo(i);
+      }, true);
+    });
+  }
+
   function scrollTo(ann) {
     let y = null;
     if (ann.anchor && ann.anchor.kind === 'quote') {
@@ -266,6 +347,8 @@
       const ok = place(target.ann);
       if (ok) scrollTo(target.ann);
       render(ok);
+      /* clearDrawn() took the rest of the page with it. */
+      placeOthers();
     } else {
       // Different page: the content script there will pick up the new index.
       chrome.runtime.sendMessage({ type: 'AT_OPEN_LIVE', url: target.pageUrl });
@@ -453,7 +536,7 @@
      * the tools, the screenshots and the restore-after-reload all work as
      * they normally do, and what you mark comes back inside the reply. */
     if (!annotating) {
-      const add = el('button', 'btn', 'Add your own');
+      const add = el('button', 'btn', 'Add annotations');
       add.type = 'button';
       add.title = identityName
         ? 'Mark up this page yourself. Your findings go back with your replies.'
@@ -470,6 +553,9 @@
         }
         annotating = true;
         render(placed);
+        /* The rest of this page's findings appear now: you cannot sensibly
+         * mark something up without seeing what has already been raised. */
+        placeOthers();
       });
       hud.appendChild(add);
     } else {
@@ -506,6 +592,8 @@
   }
 
   function teardown() {
+    const ov = overlayContext();
+    if (ov && ov.setAside) ov.setAside(false);
     clearDrawn();
     if (host) {
       host.remove();
@@ -559,7 +647,10 @@
       const now = !!(next && next.active && next.reviewOf);
       if (now === annotating) return;
       annotating = now;
-      if (host) render(lastPlaced);
+      if (!host) return;
+      render(lastPlaced);
+      if (now) placeOthers();
+      else clearOthers();
     });
 
     syncToPage();
@@ -598,9 +689,12 @@
       const now = items[index];
       if (!now || !samePage(now.pageUrl, location.href)) return;
       mount();
+      const ov = overlayContext();
+      if (ov && ov.setAside) ov.setAside(true);
       const ok = place(now.ann);
       if (ok) scrollTo(now.ann);
       render(ok);
+      placeOthers();
     }, 250);
   }
 

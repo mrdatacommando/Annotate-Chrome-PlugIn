@@ -27,6 +27,7 @@
    * than navigating - which is the path a harness can actually observe. */
   mem.at_identity = { name: 'Sam', setAt: '2026-09-08T09:00:00.000Z' };
   mem.at_review_live = {
+    bundleName: 'theirs.zip',
     index: 0,
     total: 3,
     startedAt: '2026-09-08T10:00:00.000Z',
@@ -52,6 +53,7 @@
   };
 
   window.__sent = [];
+  window.__storageListeners = [];
   window.chrome = {
     storage: {
       local: {
@@ -63,12 +65,23 @@
           return {};
         },
         async set(o) {
-          for (const key of Object.keys(o)) mem[key] = JSON.parse(JSON.stringify(o[key]));
+          /* Fires onChanged, as the real one does in the page that wrote it.
+           * An inert stub here meant the cross-context wiring - the toolbar
+           * following the session - was never actually exercised. */
+          const changes = {};
+          for (const key of Object.keys(o)) {
+            changes[key] = {
+              oldValue: mem[key],
+              newValue: JSON.parse(JSON.stringify(o[key]))
+            };
+            mem[key] = JSON.parse(JSON.stringify(o[key]));
+          }
+          window.__storageListeners.forEach((fn) => { try { fn(changes, 'local'); } catch (_) {} });
         },
         async remove(keys) { (Array.isArray(keys) ? keys : [keys]).forEach(k => delete mem[k]); },
         async getBytesInUse() { return 0; }
       },
-      onChanged: { addListener() {} }
+      onChanged: { addListener(fn) { window.__storageListeners.push(fn); } }
     },
     runtime: {
       id: 't',
@@ -251,6 +264,60 @@
       await tick(400); // syncToPage waits 250ms for the overlay
       check('navigating back brings it up again',
         !!document.getElementById('at-review-hud'));
+    }
+
+    /* --- 4c. adding findings of your own --------------------------------- */
+    {
+      const drawn = () =>
+        AT.overlay.layer.querySelectorAll('[data-at-review="1"]').length;
+
+      check('the walkthrough offers Add annotations', !!btn('Add annotations'));
+      check('only the finding being stepped to is drawn to begin with',
+        drawn() === 1, String(drawn()));
+      check('the toolbar is lifted clear of the walkthrough bar',
+        AT.overlay.shadow.querySelector('.bar').classList.contains('above-review'));
+
+      btn('Add annotations').click();
+      await tick(300);
+
+      const session = await AT.store.getSession();
+      check('it starts a session attached to THIS bundle',
+        !!session && session.reviewOf === 'theirs.zip',
+        session ? String(session.reviewOf) : 'no session');
+
+      /* The reason for the whole thing: you cannot sensibly mark up a page
+       * without seeing what has already been raised on it. */
+      const ids = Array.from(AT.overlay.layer.querySelectorAll('[data-at-review="1"][data-at-id]'))
+        .map((n) => n.dataset.atId).sort();
+      check('and now every finding on the page is drawn, not just one',
+        ids.join(',') === 'a1,a2,a3', ids.join(','));
+      check('each exactly once, not stacked', drawn() === 3, String(drawn()));
+
+      /* A session that belongs to a review must not offer to export a bundle
+       * of its own - those findings are already going somewhere. */
+      const barText = AT.overlay.shadow.querySelector('.bar').textContent;
+      check('the toolbar offers to go back to the review, not to export',
+        barText.indexOf('Back to review') > -1 && barText.indexOf('Export') === -1,
+        JSON.stringify(barText));
+
+      /* Clicking one of THEIRS selects it and opens the discussion. */
+      const other = AT.overlay.layer.querySelector('[data-at-id="a3"]');
+      check('their other findings are on the page to click', !!other);
+      other.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      await tick(200);
+      check('clicking one of theirs steps to it',
+        AT.reviewMode._index() === 2, String(AT.reviewMode._index()));
+      check('and opens the discussion ready to reply',
+        AT.reviewMode._expanded() === true);
+
+      /* An armed tool wins, so a tool always does what it says. */
+      AT.overlay.armTool('note');
+      const first = AT.overlay.layer.querySelector('[data-at-id="a1"]');
+      first.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      await tick(150);
+      check('but with a tool armed, clicking theirs does NOT steal the click',
+        AT.reviewMode._index() === 2, String(AT.reviewMode._index()));
+      AT.overlay.armTool(null);
     }
 
     /* --- 5. closing ------------------------------------------------------ */
