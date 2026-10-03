@@ -1338,13 +1338,39 @@
    * happens ONLY from this click - never automatically on load - because the
    * URL comes from a file somebody else made. */
   async function openLive() {
-    const item = current();
-    if (!item) return;
-    const url = item.page.url;
+    /* Settle any pending merge first, so bundle.items and mineIds agree before
+     * we snapshot. Otherwise one of the reviewer's own additions can be written
+     * into the live items here AND rebuilt from the session by the HUD, and so
+     * show up twice in the walkthrough - the +2 after an edit. */
+    await mergeAdditions();
+    if (!bundle || !bundle.items.length) return;
+
+    /* The reviewer's own additions are deliberately LEFT OUT of the snapshot.
+     * The live HUD reconstructs them from the session - the one place they can
+     * be edited or deleted - and counts them there. Putting them in the snapshot
+     * as well made the HUD list them once as bundle items and again as the
+     * reviewer's own. */
+    const liveItems = bundle.items.filter((it) => !isMine(it.ann));
+    if (!liveItems.length) {
+      alert('This bundle has only your own additions so far - there is nothing from the original bundle to open live.');
+      return;
+    }
+
+    /* Open on the item under the cursor. If that is one of the reviewer's own
+     * additions - which do not travel in the snapshot - land on the nearest
+     * bundle item at or before it instead (confirmed behaviour). */
+    let target = current();
+    if (!target || isMine(target.ann)) {
+      const before = bundle.items.slice(0, cursor + 1).filter((it) => !isMine(it.ann));
+      target = before.length ? before[before.length - 1] : liveItems[0];
+    }
+
+    const url = target.page.url;
     if (!/^https?:/i.test(url)) {
       alert('That page is not an http(s) URL, so it cannot be opened live.');
       return;
     }
+
     /* The whole walkthrough goes to storage, not just the current item, so the
      * live HUD can step forward and back on its own without a round trip back
      * to this page. Deliberately TRIMMED: annotations and their page context
@@ -1355,13 +1381,13 @@
         /* Named so a session started from the walkthrough can say which bundle
          * it belongs to - see AT.session.start({ reviewOf }). */
         bundleName: bundle.name,
-        items: bundle.items.map((it) => ({
+        items: liveItems.map((it) => ({
           ann: it.ann,
           pageUrl: it.page.url,
           pageTitle: it.page.title
         })),
-        index: cursor,
-        total: bundle.items.length,
+        index: liveItems.indexOf(target),
+        total: liveItems.length,
         startedAt: new Date().toISOString()
       }
     });

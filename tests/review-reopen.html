@@ -269,6 +269,34 @@
         pages[0].annotations.length === 2,
         String(pages[0].annotations.length));
 
+      /* Opening Live must not hand the reviewer's own additions to the HUD.
+       *
+       * The live HUD rebuilds those from the session itself. If openLive() ALSO
+       * writes them into at_review_live.items, the HUD counts them twice - once
+       * as bundle items, once rebuilt from the session - and the walkthrough
+       * shows two more than the list. That is the reported "+2 after an edit":
+       * the edit runs a merge that folds the additions into bundle.items, and
+       * the next Open live then snapshots them. Both additions are merged in
+       * right now, so this is exactly that state. */
+      {
+        const openBtn = Array.from(document.querySelectorAll('button'))
+          .find((b) => b.textContent === 'Open live');
+        check('Open live is offered', !!openBtn);
+        openBtn.click();
+        for (let i = 0; i < 40 && !mem.at_review_live; i++) await tick(50);
+        const snap = mem.at_review_live || { items: [] };
+        const ids = (snap.items || []).map((it) => it.ann && it.ann.id);
+        check('the live snapshot carries only the bundle\'s own items',
+          snap.items.length === 1, String(snap.items.length) + ': ' + ids.join(','));
+        check('and none of the reviewer\'s own additions',
+          !ids.includes('mine1') && !ids.includes('mine2'), ids.join(','));
+        /* bundleCount(1) + the session's additions(2), rebuilt by the HUD = 3,
+         * the same count the review list shows. The bug makes it 3 + 2 = 5. */
+        check('so the HUD total matches the list rather than doubling',
+          snap.items.length + mem.at_session.pages[0].annotations.length === 3,
+          snap.items.length + ' + ' + mem.at_session.pages[0].annotations.length);
+      }
+
       /* Put it back to one, so the export checks below stay as written. */
       const back = await AT.store.getSession();
       back.pages[0].annotations = back.pages[0].annotations
