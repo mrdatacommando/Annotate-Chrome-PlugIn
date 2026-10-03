@@ -16,21 +16,43 @@
     window.__errors.push(m + ' @' + (s || '?').split('/').pop() + ':' + l + ':' + c);
   };
 
+  window.__storageListeners = [];
   const mem = {};
   window.chrome = {
     storage: {
       local: {
-        async get(k) {
-          if (k === null) return JSON.parse(JSON.stringify(mem));
-          const keys = Array.isArray(k) ? k : [k];
-          const out = {};
-          keys.forEach((key) => { if (key in mem) out[key] = JSON.parse(JSON.stringify(mem[key])); });
-          return out;
+        /* Resolved on a later task, not a microtask. The real one is IPC, and
+         * a merge that awaits it yields to anything queued in between - which
+         * is the gap two overlapping merges fall through. A stub that resolves
+         * immediately closes that gap and hides the bug. */
+        get(k) {
+          return new Promise((resolve) => setTimeout(() => {
+            if (k === null) return resolve(JSON.parse(JSON.stringify(mem)));
+            const keys = Array.isArray(k) ? k : [k];
+            const out = {};
+            keys.forEach((key) => { if (key in mem) out[key] = JSON.parse(JSON.stringify(mem[key])); });
+            resolve(out);
+          }, 0));
         },
-        async set(o) { Object.keys(o).forEach((k) => { mem[k] = JSON.parse(JSON.stringify(o[k])); }); },
+        async set(o) {
+          /* Fires onChanged, as the real one does in the page that wrote it.
+           * An inert stub hid a race: two merges overlapping is only possible
+           * when the write notifies as well as returning. */
+          const changes = {};
+          Object.keys(o).forEach((k) => {
+            changes[k] = { oldValue: mem[k], newValue: JSON.parse(JSON.stringify(o[k])) };
+            mem[k] = JSON.parse(JSON.stringify(o[k]));
+          });
+          /* Dispatched on a later task, as the real one is. Firing it inline
+           * serialises what the browser would overlap, which is precisely the
+           * kind of race this is meant to be able to see. */
+          setTimeout(() => {
+            window.__storageListeners.forEach((fn) => { try { fn(changes, 'local'); } catch (_) {} });
+          }, 0);
+        },
         async remove(keys) { (Array.isArray(keys) ? keys : [keys]).forEach((k) => { delete mem[k]; }); }
       },
-      onChanged: { addListener() {} }
+      onChanged: { addListener(fn) { window.__storageListeners.push(fn); } }
     },
     runtime: { id: 'test', sendMessage: async () => ({ ok: true }), lastError: null },
     downloads: { download: async () => 1 }
@@ -193,6 +215,66 @@
       const mine = mem.at_session.pages[0].annotations.find((a) => a.id === 'mine1');
       check('the edit is written back to the session that owns it',
         mine.text === 'The annual toggle is mislabelled on mobile', mine.text);
+
+      /* Editing must not duplicate anything.
+       *
+       * The merge strips what it added last time and rebuilds. Two of them
+       * overlapping - one from the edit, one from the storage change the edit
+       * causes - left every addition in the report twice, because the second
+       * stripped nothing and both then pushed. Editing ONE doubled them ALL,
+       * and a reload put it right, which is the signature of exactly that. */
+      const second = {
+        id: 'mine2', type: 'note', color: '#4aa3f0', author: 'Mark',
+        text: 'Second thing I noticed', comment: '', unplaced: false,
+        createdAt: '2026-09-09T11:05:00.000Z',
+        anchor: { kind: 'point', selector: 'body', offset: { x: 9, y: 9 } },
+        shotId: null, rect: { x: 10, y: 10, w: 40, h: 40 }
+      };
+      const live = await AT.store.getSession();
+      live.pages[0].annotations.push(second);
+      await AT.store.setSession(live);
+      await tick(300);
+
+      const countIn = (text) =>
+        document.querySelectorAll('.rail .row').length &&
+        Array.from(document.querySelectorAll('.rail .row'))
+          .filter((r) => r.textContent.indexOf(text) > -1).length;
+
+      check('both additions are listed once each',
+        countIn('The annual toggle') === 1 && countIn('Second thing') === 1,
+        countIn('The annual toggle') + ' / ' + countIn('Second thing'));
+
+      // Now edit one of them, the way the report described.
+      Array.from(document.querySelectorAll('.rail .row'))
+        .find((r) => r.textContent.indexOf('Second thing') > -1).click();
+      await tick(150);
+      Array.from(document.querySelectorAll('.mine-actions button'))
+        .find((b) => b.textContent === 'Edit').click();
+      await tick(80);
+      const ta2 = document.querySelector('textarea.mine-edit');
+      ta2.value = 'Second thing, reworded';
+      ta2.dispatchEvent(new Event('blur'));
+      await tick(400);
+
+      check('editing one does not duplicate it',
+        countIn('Second thing, reworded') === 1,
+        String(countIn('Second thing, reworded')));
+      check('and does not duplicate the other one either',
+        countIn('The annual toggle') === 1,
+        String(countIn('The annual toggle')));
+
+      const pages = JSON.parse(JSON.stringify(
+        (await AT.store.getSession()).pages));
+      check('the session itself still holds exactly two',
+        pages[0].annotations.length === 2,
+        String(pages[0].annotations.length));
+
+      /* Put it back to one, so the export checks below stay as written. */
+      const back = await AT.store.getSession();
+      back.pages[0].annotations = back.pages[0].annotations
+        .filter((a) => a.id !== 'mine2');
+      await AT.store.setSession(back);
+      await tick(300);
 
       /* The findings you were SENT are not yours to rewrite. */
       const theirRow = Array.from(document.querySelectorAll('.rail .row'))

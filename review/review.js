@@ -186,7 +186,27 @@
   let minePages = new Set(); // page urls that exist ONLY because of those
   let stray = false;         // a session running that belongs to no bundle here
 
-  async function mergeAdditions() {
+  /* Serialised, and that is not a precaution - it is a fix.
+   *
+   * The merge strips what it added last time using `mineIds`, clears that set,
+   * and THEN awaits storage. Two overlapping calls interleave disastrously:
+   * the second strips nothing, because the first already emptied the set, and
+   * both then push their additions in. Every addition ends up in the report
+   * twice - which is why editing ONE annotation doubled them all, and why a
+   * reload put it right: a single clean merge.
+   *
+   * Two callers fire on the same write: updateMine/deleteMine merge directly
+   * so the export cannot be an edit behind, and the storage listener merges
+   * because the change may equally have come from the live page. Rather than
+   * try to tell those apart, they are simply made to take turns. */
+  let mergeQueue = Promise.resolve();
+
+  function mergeAdditions() {
+    mergeQueue = mergeQueue.then(doMerge, doMerge);
+    return mergeQueue;
+  }
+
+  async function doMerge() {
     if (!bundle) return;
 
     /* Rebuilt from scratch every time rather than appended to. An addition

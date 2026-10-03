@@ -60,7 +60,9 @@
 }
 
 .hud {
-  display: flex; align-items: center; gap: 10px;
+  /* Wraps. With a badge, Edit, Delete and the rest in one row the last
+     buttons were pushed off the end of the bar entirely. */
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding: 9px 12px; border-radius: 12px;
   /* Purple, not the annotate toolbar's near-black: at a glance this must read
      as a read-only review pass, not a session you can mark up. */
@@ -708,7 +710,10 @@
         placeOthers();
       });
       hud.appendChild(add);
-    } else {
+    } else if (!mineIds.has(ann.id)) {
+      /* Not shown while you are looking at one of your own: the badge beside
+       * it already says you are adding, and this was the longest thing in a
+       * bar that had run out of room. */
       const mine = el('span', 'warn', 'adding annotations — use the toolbar');
       mine.title =
         'The annotation toolbar is live on this page. What you mark is ' +
