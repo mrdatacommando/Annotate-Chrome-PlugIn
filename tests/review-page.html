@@ -75,6 +75,85 @@
   check('the report module is available to the page', !!(window.AT && AT.report));
 
   flush();
+
+  /* --- opening a real bundle --------------------------------------------
+   *
+   * Driven through the file input, because that is the path a reviewer takes.
+   * The guard that stops a session starting mid-review reads the stored
+   * record, and an earlier version of this feature was tested only by writing
+   * that record by hand - which passed happily while NOTHING in the real load
+   * path ever wrote it. Opening a bundle and leaving it there recorded no
+   * open bundle at all, and a session could still be started. */
+  (async function () {
+    const tick = (ms) => new Promise((r) => setTimeout(r, ms || 30));
+    try {
+      const session = {
+        id: 's_rp', author: 'Sam', startedAt: '2026-09-06T09:00:00.000Z',
+        endedAt: '2026-09-06T09:30:00.000Z', active: false,
+        pages: [{
+          url: 'https://example.com/pricing', title: 'Pricing',
+          viewport: { w: 1280, h: 800, dpr: 2 }, visitedAt: '2026-09-06T09:01:00.000Z',
+          annotations: [{
+            id: 'a1', type: 'highlight', color: '#f4c430', author: 'Sam',
+            text: 'Free forever', comment: 'Not true', unplaced: false,
+            createdAt: '2026-09-06T09:02:00.000Z',
+            anchor: { kind: 'quote', selector: 'main > p',
+                      quote: { prefix: 'is ', exact: 'Free forever', suffix: ' for' } },
+            shotId: null, rect: { x: 300, y: 1250, w: 90, h: 18 }
+          }]
+        }],
+        shots: []
+      };
+
+      check('nothing is recorded as open before a bundle is loaded',
+        !(mem.at_review && mem.at_review.open === true),
+        JSON.stringify(mem.at_review || null));
+
+      const built = AT.report.build(session, new Map());
+      const blob = AT.zip.create(built.files);
+      const file = new File([blob], 'annotate-session-test.zip', { type: 'application/zip' });
+      const input = document.getElementById('file');
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      input.files = dt.files;
+      input.dispatchEvent(new Event('change'));
+
+      for (let i = 0; i < 40 && !(mem.at_review && mem.at_review.open === true); i++) {
+        await tick(50);
+      }
+
+      check('the bundle actually opened',
+        app.textContent.indexOf('Open a review bundle') === -1,
+        JSON.stringify(app.textContent.slice(0, 60)));
+      check('LOADING a bundle records it as open, with no interaction at all',
+        !!(mem.at_review && mem.at_review.open === true),
+        JSON.stringify(mem.at_review || null));
+      check('and it names the bundle that is open',
+        mem.at_review.bundleName === 'annotate-session-test.zip',
+        mem.at_review.bundleName);
+
+      /* Close has to put it back, or the block never lifts. */
+      const closeBtn = Array.from(document.querySelectorAll('button'))
+        .find((b) => b.textContent === 'Close bundle');
+      check('the review page offers Close bundle', !!closeBtn);
+      if (closeBtn) {
+        closeBtn.click();
+        for (let i = 0; i < 40 && mem.at_review && mem.at_review.open !== false; i++) {
+          await tick(50);
+        }
+        check('Close bundle lowers the open flag',
+          mem.at_review && mem.at_review.open === false,
+          JSON.stringify(mem.at_review || null));
+        check('and keeps the record, because it holds the reviewer\'s replies',
+          !!mem.at_review && mem.at_review.bundleName === 'annotate-session-test.zip');
+        check('and returns the page to the drop zone',
+          app.textContent.indexOf('Open a review bundle') > -1);
+      }
+    } catch (e) {
+      lines.push('FAIL threw :: ' + (e && e.message ? e.message : String(e)));
+    }
+    flush();
+  })();
 })();
 </script>
 </body>

@@ -263,6 +263,16 @@
         cursor = state.cursor;
       }
     }
+
+    /* Record that a bundle is OPEN, now, before anything else happens.
+     *
+     * saveState() otherwise only runs when the reviewer moves, marks or
+     * replies, so opening a bundle and leaving it sitting there wrote nothing
+     * at all - and the session guard, which reads exactly this record, saw no
+     * open bundle and let a session start. Loading is the moment it becomes
+     * open, so it is the moment to say so. */
+    await saveState();
+
     render();
   }
 

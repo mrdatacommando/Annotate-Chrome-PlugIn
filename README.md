@@ -10,7 +10,7 @@ everything together.
 ## Download
 
 **Just want to use it?** Grab
-[`annotate-tool-v1.16.0.zip`](releases/annotate-tool-v1.16.0.zip) from the
+[`annotate-tool-v1.17.0.zip`](releases/annotate-tool-v1.17.0.zip) from the
 `releases/` folder, or from the [latest release](../../releases/latest) page,
 then follow **Install** below. Nothing else in this repository is needed to run
 the extension — the source is here for people who want to read or change it.
@@ -20,7 +20,7 @@ the extension — the source is here for people who want to read or change it.
 Chrome blocks side-loaded `.crx` files outside the Web Store, so **Load
 unpacked** is the only reliable install path.
 
-1. Unzip `annotate-tool-v1.16.0.zip` somewhere permanent (Chrome reads the folder on
+1. Unzip `annotate-tool-v1.17.0.zip` somewhere permanent (Chrome reads the folder on
    every launch — if you delete it, the extension disappears).
 2. Open `chrome://extensions`.
 3. Turn on **Developer mode** (top right).
@@ -49,7 +49,25 @@ since it has access to every site.
      arrow carrying a note shows it as a label beside its tail.
    - **Shot** — captures the visible area with your annotations in it.
 4. `Esc` cancels the armed tool.
-5. Click **End & Export** to open the review page, then **Export ZIP**.
+5. Click **End & Export** to open the export view, then **Export ZIP**.
+
+### Tidying up before you export
+
+The export view is a last look at everything before it leaves your machine, so
+it is also where you can change your mind:
+
+- **Edit** on any entry reopens what you wrote. On a note, box or arrow that is
+  the text itself; on a highlight it is your comment, because the highlight's
+  text is quoted *from the page* and is the record of what the page said —
+  editing it would make the bundle claim wording that was never there, and
+  stop the quote anchor re-finding the passage.
+- **Delete** removes an entry, and **Delete page** removes a page and
+  everything on it. Both ask once: the button changes to *Really delete?* and
+  only the second click acts, disarming itself after a few seconds.
+- Deleting takes the right screenshots with it. An entry's screenshot goes
+  **unless another entry still uses it** — annotations taken moments apart
+  share one picture rather than capturing the same view twice — and a
+  screenshot you took on its own is never removed by deleting an annotation.
 
 ## Working folder (optional)
 
@@ -404,12 +422,13 @@ chrome.exe --headless --disable-gpu --allow-file-access-from-files \
 | `lens.html` | Magnifier geometry: the under-cursor-is-centred invariant |
 | `nav.html` | In-page navigation: what counts as a page change, and that it polls |
 | `live-view.html` | Live HUD: stepping, the review pane, replying |
-| `review-page.html` | The review page boots to its empty state |
+| `review-page.html` | The review page: empty state, and that opening a bundle records it as open |
+| `viewer-page.html` | The export view: editing a comment, deleting an entry or a page, and which screenshots go with them |
 | `frames.html` | iframe paths, top-URL resolution, relayed writes |
 | `roundtrip.html` | Export → read → review → re-export, and v1 compatibility |
 | `integration.html` | Full stack: create, capture, reload-restore, unplaced, region highlights, popover saves, arrow geometry |
 
-645 checks at time of writing.
+680 checks at time of writing.
 
 **Not covered by the harnesses**, because they need a real extension context:
 `tabs.captureVisibleTab`, `chrome.downloads`, and cross-tab session sync. Those

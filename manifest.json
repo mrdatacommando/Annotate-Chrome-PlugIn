@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Annotate Tool",
-  "version": "1.16.0",
+  "version": "1.17.0",
   "description": "Annotate any webpage with highlights, sticky notes, text boxes and arrows, capture annotated screenshots, and export the whole review session as a single ZIP ready for a teammate or an AI to act on.",
   "author": "Mark Van de Velde",
   "action": {

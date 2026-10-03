@@ -82,6 +82,29 @@
   }
   button.go { background: var(--accent); color: #fff; }
   button:disabled { opacity: .5; cursor: default; }
+
+  /* Row and page controls. Quiet by default: this page is for reading back
+     what you recorded, so Delete should be findable without competing with
+     the content for attention. */
+  .pagehead { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .pagehead > div { min-width: 0; }
+  .rowacts { white-space: nowrap; text-align: right; width: 1%; }
+  button.mini {
+    padding: 4px 9px; border-radius: 7px; font-size: 12px;
+    background: transparent; color: var(--muted); border: 1px solid var(--line);
+  }
+  button.mini + button.mini { margin-left: 6px; }
+  button.mini:hover { color: var(--ink); }
+  /* Armed is deliberately loud: it is the only state where the next click
+     destroys something. */
+  button.mini.armed {
+    background: var(--warn); border-color: var(--warn); color: #fff;
+  }
+  td textarea {
+    width: 100%; min-width: 190px; font: inherit; padding: 6px 8px;
+    border-radius: 7px; border: 1px solid var(--line);
+    background: var(--bg); color: inherit; resize: vertical;
+  }
   .note { color: var(--muted); font-size: 12px; margin-top: 8px; }
   .empty { color: var(--muted); font-style: italic; }
 </style>

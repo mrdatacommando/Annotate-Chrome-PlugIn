@@ -56,17 +56,120 @@
     return map;
   }
 
+  /* Which field holds the user's OWN words.
+   *
+   * A highlight's `text` is quoted FROM the page, so it is a record of what
+   * the page said, not something to edit: changing it would make the bundle
+   * claim wording that was never there, and break the quote anchor that
+   * re-finds the passage on the live page. The comment is the user's. Every
+   * other tool keeps what the user typed in `text`. */
+  function writableField(a) {
+    return a.type === 'highlight' ? 'comment' : 'text';
+  }
+
+  /* Destructive actions ask once, in place. The same two-step the popup uses
+   * for Discard session: no dialog to misfire, and the question stays attached
+   * to the thing it is about. It disarms itself, so a half-pressed button is
+   * never left sitting armed for a later stray click. */
+  function dangerButton(label, armedLabel, onConfirm) {
+    const b = el('button', 'mini', label);
+    let armed = false;
+    let timer = null;
+    b.addEventListener('click', async () => {
+      if (!armed) {
+        armed = true;
+        b.textContent = armedLabel;
+        b.classList.add('armed');
+        timer = setTimeout(() => {
+          armed = false;
+          b.textContent = label;
+          b.classList.remove('armed');
+        }, 4000);
+        return;
+      }
+      clearTimeout(timer);
+      b.disabled = true;
+      await onConfirm();
+    });
+    return b;
+  }
+
+  /* Reads the session back, changes it, writes it whole. Reading back rather
+   * than editing the copy this render was built from matters: the session is
+   * also being written by the content script on every page still open, so a
+   * stale copy would quietly undo whatever was annotated in between. */
+  async function mutate(fn, rerender) {
+    const session = await AT.store.getSession();
+    if (!session) return;
+    fn(session);
+    await AT.store.setSession(session);
+    if (rerender === false) return;
+    /* Only after a removal: the pixels for a screenshot nothing references any
+     * more would otherwise sit in storage until the session was discarded. */
+    await AT.store.sweepOrphanShots((session.shots || []).map((s) => s.id));
+    await render();
+  }
+
+  async function deletePage(url) {
+    await mutate((session) => {
+      session.pages = (session.pages || []).filter((p) => p.url !== url);
+      /* Its screenshots go with it - keeping them would export pictures of a
+       * page the bundle no longer mentions. */
+      session.shots = (session.shots || []).filter((s) => s.pageUrl !== url);
+    });
+  }
+
+  async function deleteAnnotation(url, id) {
+    await mutate((session) => {
+      const page = (session.pages || []).find((p) => p.url === url);
+      if (!page) return;
+      const victim = (page.annotations || []).find((a) => a.id === id);
+      page.annotations = (page.annotations || []).filter((a) => a.id !== id);
+
+      /* The screenshot taken for this annotation goes too - but only if
+       * nothing else points at it. autoCapture REUSES a recent shot rather
+       * than taking a second picture of the same view, so two annotations can
+       * share one; and a screenshot taken on its own belongs to no annotation
+       * and must survive regardless. */
+      const shotId = victim && victim.shotId;
+      if (!shotId) return;
+      const stillUsed = (session.pages || []).some((p) =>
+        (p.annotations || []).some((a) => a.shotId === shotId));
+      if (!stillUsed) {
+        session.shots = (session.shots || []).filter((s) => s.id !== shotId);
+      }
+    });
+  }
+
+  /* Saved on blur rather than per keystroke, and without a re-render: the same
+   * reasoning as the screenshot captions, plus re-rendering mid-edit would
+   * tear the field out from under the person typing in it. */
+  async function saveField(url, id, field, value) {
+    await mutate((session) => {
+      const page = (session.pages || []).find((p) => p.url === url);
+      const ann = page && (page.annotations || []).find((a) => a.id === id);
+      if (ann) ann[field] = value;
+    }, false);
+  }
+
   function renderPage(page, shots, pixels) {
     const card = el('div', 'card');
-    card.appendChild(el('h2', null, page.title || page.url));
-    card.appendChild(el('p', 'url', page.url));
+
+    const head = el('div', 'pagehead');
+    const heading = el('div');
+    heading.appendChild(el('h2', null, page.title || page.url));
+    heading.appendChild(el('p', 'url', page.url));
+    head.appendChild(heading);
+    head.appendChild(dangerButton('Delete page', 'Delete this page?',
+      () => deletePage(page.url)));
+    card.appendChild(head);
 
     const anns = page.annotations || [];
     if (anns.length) {
       const table = el('table');
-      const head = el('tr');
-      ['Type', 'Content', 'Comment'].forEach((h) => head.appendChild(el('th', null, h)));
-      table.appendChild(head);
+      const headRow = el('tr');
+      ['Type', 'Content', 'Comment', ''].forEach((h) => headRow.appendChild(el('th', null, h)));
+      table.appendChild(headRow);
 
       anns.forEach((a) => {
         const tr = el('tr');
@@ -86,8 +189,51 @@
         }
         tr.appendChild(typeCell);
 
-        tr.appendChild(el('td', null, a.text || '—'));
-        tr.appendChild(el('td', null, a.comment || '—'));
+        const contentCell = el('td', null, a.text || '—');
+        const commentCell = el('td', null, a.comment || '—');
+        tr.appendChild(contentCell);
+        tr.appendChild(commentCell);
+
+        const field = writableField(a);
+        const target = field === 'comment' ? commentCell : contentCell;
+
+        const acts = el('td', 'rowacts');
+        const edit = el('button', 'mini', 'Edit');
+        edit.title = field === 'comment'
+          ? 'Edit your comment. The quoted text above is what the page said, ' +
+            'and stays as it was.'
+          : 'Edit what you wrote here.';
+        edit.addEventListener('click', () => {
+          if (target.querySelector('textarea')) return;
+          const ta = document.createElement('textarea');
+          ta.value = a[field] || '';
+          ta.rows = 2;
+          let settled = false;
+          const show = (value) => {
+            settled = true;
+            target.replaceChildren(document.createTextNode(value || '—'));
+          };
+          ta.addEventListener('blur', async () => {
+            if (settled) return;
+            const value = ta.value.trim();
+            a[field] = value;
+            show(value);
+            await saveField(page.url, a.id, field, value);
+          });
+          /* Escape abandons the edit. `settled` stops the blur that removing
+           * the textarea causes from then saving it anyway. Enter is left
+           * alone, because a comment is allowed more than one line. */
+          ta.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') show(a[field]);
+          });
+          target.replaceChildren(ta);
+          ta.focus();
+        });
+        acts.appendChild(edit);
+        acts.appendChild(dangerButton('Delete', 'Really delete?',
+          () => deleteAnnotation(page.url, a.id)));
+        tr.appendChild(acts);
+
         table.appendChild(tr);
       });
       card.appendChild(table);
